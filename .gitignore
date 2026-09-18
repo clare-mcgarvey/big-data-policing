@@ -1,0 +1,12 @@
+# Raw and derived data. See README.md "Data" section for how to obtain/rebuild these
+data/*
+!data/.gitkeep
+
+# R / Quarto artifacts
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata
+/*_cache/
+/*_files/
+.DS_Store

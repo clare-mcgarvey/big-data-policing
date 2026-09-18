@@ -1,0 +1,288 @@
+---
+title: "Build the Weighted Surveillance Index"
+format: html
+---
+
+## Technology Weights
+
+```{r}
+tech_weights <- tribble(
+  ~technology,                            ~weight,
+  "Body-Worn Cameras",                     1.67,
+  "Cell-Site Simulator",                   3.67,
+  "Drones",                                3.67,
+  "Camera Registry",                       3.83,
+  "Predictive Policing",                   3.83,
+  "Real-Time Crime Center",                4.33,
+  "Gunshot Detection",                     4.50,
+  "Automated License Plate Readers",       4.50,
+  "Face Recognition",                      4.67,
+  "Third-Party Investigative Platforms",   4.83,
+  "Video Analytics",                       4.83,
+  "Fusion Center",                         4.83
+)
+
+anti_join(atlas_clean, tech_weights, by = "technology") |> count(technology)
+```
+
+## Merging Datasets
+
+```{r}
+data("fips_codes")   # state, state_code, state_name, county, county_code
+
+fips_xwalk <- fips_codes |>
+  transmute(
+    state_name  = str_to_title(state_name),
+    state_name  = case_when(
+      state_name == "U.s. Virgin Islands" ~ "Virgin Islands",
+      TRUE ~ state_name
+    ),
+    state_abb   = state,
+    county_name = str_to_title(
+      str_remove(county, 
+        regex(" County$| Parish$| Borough$| City And Borough$| Census Area$| Municipality$| Municipio$| Municipality County$| Islands?$",
+              ignore_case = TRUE))),
+    GEOID       = paste0(state_code, county_code)
+  )
+```
+
+```{r}
+# Attach county_clean + GEOID to every individual record, before any aggregation
+atlas_county <- atlas_clean |>
+  mutate(
+    county_clean = str_to_title(
+      str_remove(county,
+        regex(" County$| Parish$| Borough$| City And Borough$| Census Area$| Municipality$| Municipio$| Municipality County$| Island$",
+              ignore_case = TRUE))
+    )
+  ) |>
+  left_join(fips_xwalk, by = c("state" = "state_name", "county_clean" = "county_name"))
+
+
+# Rebuild the unmatched list at record level, with counts of how many rows each affects
+unmatched_review <- atlas_county |>
+  filter(is.na(GEOID)) |>
+  count(state, county, sort = TRUE)
+
+print(unmatched_review, n = 30)
+```
+
+```{r}
+atlas_county <- atlas_county |> 
+  left_join(tech_weights, by = "technology") |>
+  mutate(weight = replace_na(weight, 1)) |>
+  group_by(GEOID) |>                        
+  summarise(
+    state                  = first(state),    
+    county                 = first(county),   
+    n_records              = n(),
+    n_agencies             = n_distinct(agency),
+    n_tech_types           = n_distinct(technology),
+    raw_weighted_index     = sum(weight, na.rm = TRUE),
+    n_fr                   = sum(technology == "Face Recognition"),
+    n_alpr                 = sum(technology == "Automated License Plate Readers"),
+    n_pred                 = sum(technology == "Predictive Policing"),
+    n_bwc                  = sum(technology == "Body-Worn Cameras"),
+    n_gunshot              = sum(technology == "Gunshot Detection"),
+    n_rtcc                 = sum(technology == "Real-Time Crime Center"),
+    n_drone                = sum(technology == "Drones"),
+    n_cell_sim             = sum(technology == "Cell-Site Simulator"),
+    n_vid_analytics        = sum(technology == "Video Analytics"),
+    n_cam_reg              = sum(technology == "Camera Registry"),
+    n_investigative        = sum(technology == "Third-Party Investigative Platforms"),
+    n_fusion               = sum(technology == "Fusion Center"),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# Review join quality — how many counties matched?
+cat("Matched:  ", sum(!is.na(atlas_county$GEOID)), "\n")
+```
+
+```{r}
+cat("Unmatched:", sum( is.na(atlas_county$GEOID)), "\n")
+```
+
+```{r}
+# Unmatched
+atlas_county |> filter(is.na(GEOID)) |> select(state, county) |> print(n = 30)
+```
+
+## Weighted Surveillance Index
+
+```{r}
+analysis_df <- acs |>
+  left_join(
+    atlas_county |> st_drop_geometry() |> 
+      select(GEOID, n_records, n_agencies, n_tech_types, raw_weighted_index,
+             starts_with("n_")),
+    by = "GEOID"
+  ) |>
+  mutate(
+    # Counties not in Atlas get 0, not NA
+    across(c(n_records, n_agencies, n_tech_types, raw_weighted_index, starts_with("n_")),
+           ~ replace_na(., 0)),
+    weighted_index_per100k = raw_weighted_index / total_pop * 100000
+  )
+
+analysis_df |>
+  st_drop_geometry() |>
+  summarise(
+    total_counties  = n(),
+    with_index      = sum(weighted_index_per100k > 0, na.rm = TRUE),
+    without_index   = sum(weighted_index_per100k == 0),
+    pct_without     = scales::percent(without_index / total_counties, accuracy = 0.01)
+  )
+```
+
+## Analysis Dataset
+
+```{r}
+# Ground truth: total counties per state from fips_codes
+total_counties_by_state <- fips_codes |>
+  distinct(state_name, county) |>
+  count(state_name, name = "total_counties")
+
+# Counties with a surveillance index: deduplicate by GEOID to avoid
+# multi-county string rows (e.g. "Cook County, Kane County") inflating counts
+state_coverage <- atlas_county |>
+  filter(!is.na(GEOID)) |>                        # matched counties only
+  distinct(state, GEOID) |>                       # one row per unique county
+  count(state, name = "n_with_surveillance") |>
+  left_join(total_counties_by_state, by = c("state" = "state_name")) |>
+  filter(!is.na(total_counties)) |>
+  mutate(
+    pct_coverage = n_with_surveillance / total_counties,
+    state        = fct_reorder(state, pct_coverage)
+  )
+
+ggplot(state_coverage, aes(x = pct_coverage, y = state)) +
+  geom_col(fill = "#4C72B0") +
+  geom_text(
+    aes(label = scales::percent(pct_coverage, accuracy = 1)),
+    hjust = -0.1, size = 2.8
+  ) +
+  scale_x_continuous(
+    labels = scales::percent,
+    limits = c(0, 1),
+    expand = expansion(mult = c(0, 0.08))
+  ) +
+  labs(
+    title    = "Surveillance data coverage by state",
+    subtitle = "Percentage of counties with at least one surveillance record",
+    x        = "% of counties with a surveillance index",
+    y        = NULL
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(
+    axis.text.y        = element_text(size = 7),
+    panel.grid.major.y = element_blank()
+  )
+```
+
+```{r}
+# Pull ALL US territories/states — no exclusions
+county_shp_all <- counties(cb = TRUE, resolution = "20m", year = 2022) |>
+  select(GEOID, STATEFP, geometry)
+
+state_shp_all <- states(cb = TRUE, resolution = "20m", year = 2022) |>
+  select(STATEFP, geometry)
+
+# Join index data onto the full geometry set
+county_map_data_all <- county_shp_all |>
+  left_join(
+    analysis_df |>
+      st_drop_geometry() |>
+      select(GEOID, weighted_index_per100k) |>
+      mutate(log_index = log1p(weighted_index_per100k)),
+    by = "GEOID"
+  ) |>
+  mutate(log_index_plot = if_else(weighted_index_per100k == 0, NA_real_, log_index))
+
+# Split into regional subsets
+continental <- county_map_data_all |> filter(!STATEFP %in% c("02", "15", "72", "78", "60", "66", "69"))
+alaska      <- county_map_data_all |> filter(STATEFP == "02")
+hawaii      <- county_map_data_all |> filter(STATEFP == "15")
+puerto_rico <- county_map_data_all |> filter(STATEFP == "72")
+
+# Shared scale limits so all panels use identical color mapping
+index_range <- range(county_map_data_all$log_index_plot, na.rm = TRUE)
+
+figure_base_size <- 16
+
+make_panel <- function(data, state_borders = NULL, show_legend = FALSE) {
+  p <- ggplot(data) +
+    geom_sf(aes(fill = log_index_plot), colour = NA) +
+    scale_fill_viridis_c(
+      option = "magma", na.value = "grey90", direction = -1,
+      limits = index_range,
+      name = "log(index\nper 100k + 1)",
+      guide = if (show_legend) "colourbar" else "none"
+    ) +
+    theme_thesis_map(base_size = figure_base_size)
+  if (!is.null(state_borders)) {
+    p <- p + geom_sf(data = state_borders, fill = NA, colour = "white", linewidth = 0.3)
+  }
+  p
+}
+
+panel_continental <- make_panel(
+  continental,
+  state_shp_all |> filter(!STATEFP %in% c("02","15","72","78","60","66","69")),
+  show_legend = TRUE
+) +
+  theme(legend.position = "right",
+        plot.margin = margin(t = 5, r = 15, b = 5, l = 5))
+
+panel_alaska <- make_panel(alaska) +
+  coord_sf(xlim = c(-170, -130), ylim = c(51, 72), expand = FALSE)
+
+panel_hawaii <- make_panel(hawaii) +
+  coord_sf(xlim = c(-160.5, -154.5), ylim = c(18.5, 22.5), expand = FALSE)
+
+panel_pr <- make_panel(puerto_rico) +
+  coord_sf(xlim = c(-67.5, -65.2), ylim = c(17.9, 18.6), expand = FALSE)
+
+final_surveillance_index_map <- panel_continental +
+  inset_element(panel_alaska, left = 0.0,  bottom = 0.0,  right = 0.30, top = 0.30) +
+  inset_element(panel_hawaii, left = 0.28, bottom = 0.0,  right = 0.46, top = 0.16) +
+  inset_element(panel_pr,     left = 0.82, bottom = 0.0,  right = 1.0,  top = 0.18) +
+  plot_annotation(
+    title    = "Surveillance Index by County",
+    subtitle = "Log-transformed index per 100,000 population | Grey = no surveillance records",
+    caption  = "Source: Atlas of Surveillance · ACS 2022 5-year estimates. Alaska, Hawaii, and Puerto Rico not shown to scale.",
+    theme    = theme_thesis_map(base_size = figure_base_size) +
+               theme(plot.margin = margin(t = 5, r = 15, b = 5, l = 5))
+  )
+
+save_figure(final_surveillance_index_map, "surveillance_index_map.png", width = 12, height = 8)
+```
+
+```{r}
+final_surveillance_index_map
+```
+
+### Exclusions
+
+```{r}
+territory_check <- tibble(
+  STATEFP = c("02","15","72","78","60","66","69"),
+  name    = c("Alaska","Hawaii","Puerto Rico","US Virgin Islands","American Samoa","Guam","N. Mariana Islands")
+)
+
+territory_check |>
+  left_join(
+    county_map_data_all |> st_drop_geometry() |> count(STATEFP, name = "n_in_map_geometry"),
+    by = "STATEFP"
+  ) |>
+  left_join(
+    atlas_clean |> count(state, name = "n_atlas_records") |>
+      mutate(STATEFP = case_when(
+        state == "Alaska" ~ "02", state == "Hawaii" ~ "15", state == "Puerto Rico" ~ "72",
+        state == "Virgin Islands" ~ "78", state == "American Samoa" ~ "60",
+        state == "Guam" ~ "66", state == "Northern Mariana Islands" ~ "69", TRUE ~ NA_character_
+      )) |> select(-state),
+    by = "STATEFP"
+  )
+```

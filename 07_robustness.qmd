@@ -1,0 +1,578 @@
+---
+title: "Robustness Checks"
+format: html
+---
+
+## Population Threshold
+
+```{r}
+# Benefit: how many influential points fall below the various thresholds? 
+cooks_d <- cooks.distance(ols_model_extended) 
+influential_geoids <- spatial_df |> st_drop_geometry() |>
+  filter(!if_any(c(p_black, p_hisp, p_foreign, med_income, gini, log_pop_den,
+                    med_home_val, p_renter), is.na)) |>
+  slice(which(cooks_d > 4 / length(cooks_d))) |>
+  pull(GEOID)
+
+spatial_df |>
+  st_drop_geometry() |>
+  filter(GEOID %in% influential_geoids) |>
+  summarise(
+    below_2500  = sum(total_pop < 2500),
+    below_5000  = sum(total_pop < 5000),
+    below_10000 = sum(total_pop < 10000),
+    total_influential = n()
+  )
+```
+
+```{r}
+# Cost: how many of the total counties would be dropped at each threshold
+spatial_df |> st_drop_geometry() |>
+  summarise(
+    n_total = n(),
+    below_2500  = sum(total_pop < 2500),
+    below_5000  = sum(total_pop < 5000),
+    below_10000 = sum(total_pop < 10000)
+  )
+```
+
+```{r}
+# Threshold of 2500
+threshold_summary_2500 <- bind_rows(
+  spatial_df |> st_drop_geometry() |>
+    summarise(
+      group       = "All counties",
+      n           = n(),
+      below_2500  = sum(total_pop < 2500),
+      pct         = scales::percent(below_2500 / n, accuracy = 0.1)
+    ),
+  spatial_df |> st_drop_geometry() |>
+    filter(GEOID %in% influential_geoids) |>
+    summarise(
+      group       = "Influential counties (Cook's D > 4/n)",
+      n           = n(),
+      below_2500  = sum(total_pop < 2500),
+      pct         = scales::percent(below_2500 / n, accuracy = 0.1)
+    )
+)
+
+threshold_summary_2500
+```
+
+```{r}
+# Threshold of 5000
+threshold_summary_5000 <- bind_rows(
+  spatial_df |> st_drop_geometry() |>
+    summarise(
+      group       = "All counties",
+      n           = n(),
+      below_5000  = sum(total_pop < 5000),
+      pct         = scales::percent(below_5000 / n, accuracy = 0.1)
+    ),
+  spatial_df |> st_drop_geometry() |>
+    filter(GEOID %in% influential_geoids) |>
+    summarise(
+      group       = "Influential counties (Cook's D > 4/n)",
+      n           = n(),
+      below_5000  = sum(total_pop < 5000),
+      pct         = scales::percent(below_5000 / n, accuracy = 0.1)
+    )
+)
+
+threshold_summary_5000
+```
+
+### Rebuilding dataset and spatial weights
+
+#### Threshold = 5000
+
+```{r}
+# Population threshold: 5,000
+spatial_df_5k <- spatial_df |> filter(total_pop >= 5000)
+cat("Counties retained (threshold = 5,000):", nrow(spatial_df_5k), "of", nrow(spatial_df), "\n")
+```
+
+```{r}
+weights_5k <- build_spatial_weights(spatial_df_5k)
+```
+
+#### Threshold = 2500
+
+```{r}
+# Population threshold = 2500
+spatial_df_2500 <- spatial_df |> filter(total_pop >= 2500)
+cat("Counties retained (threshold = 2,500):", nrow(spatial_df_2500), "of", nrow(spatial_df), "\n")
+```
+
+```{r}
+weights_2500 <- build_spatial_weights(spatial_df_2500)
+```
+
+### 4 and 5 OLS with Thresholds
+
+```{r}
+# Models
+ols_full <- lm(
+  log1p(weighted_index_per100k) ~ p_black + p_hisp + p_foreign + 
+    med_income + gini + med_home_val + p_renter + log_pop_den,
+  data = spatial_df |> st_drop_geometry()
+)
+
+ols_2500 <- lm(
+  log1p(weighted_index_per100k) ~ p_black + p_hisp + p_foreign + 
+    med_income + gini + med_home_val + p_renter + log_pop_den,
+  data = spatial_df_2500 |> st_drop_geometry() 
+)
+
+ols_5000 <- lm(
+  log1p(weighted_index_per100k) ~ p_black + p_hisp + p_foreign + 
+    med_income + gini + med_home_val + p_renter + log_pop_den,
+  data = spatial_df_5k |> st_drop_geometry()
+)
+
+# extract_model() is defined once in 00_setup.qmd and reused across the repo
+# Comparison table
+comparison_wide <- bind_rows(
+  extract_model(ols_full,  "Full sample"),
+  extract_model(ols_2500,  "Threshold: 2,500+"),
+  extract_model(ols_5000,  "Threshold: 5,000+")
+) |>
+  mutate(estimate_label = paste0(
+    round(estimate, 3),
+    case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01  ~ "**",
+      p.value < 0.05  ~ "*",
+      TRUE ~ ""
+    )
+  )) |>
+  select(model, term, estimate_label) |>
+  pivot_wider(names_from = model, values_from = estimate_label)
+
+# R² and n table
+model_stats <- tibble(
+  model  = c("Full sample", "Threshold: 2,500+", "Threshold: 5,000+"),
+  adj_r2 = c(glance(ols_full)$adj.r.squared, glance(ols_2500)$adj.r.squared, glance(ols_5000)$adj.r.squared),
+  n      = c(nobs(ols_full), nobs(ols_2500), nobs(ols_5000))
+)
+
+comparison_wide
+```
+
+```{r}
+model_stats
+```
+
+```{r}
+shared_labels <- c(
+  "Percent Black", "Percent Hispanic", "Percent foreign-born",
+  "Median household income", "Gini coefficient", "Median home value",
+  "Percent renter-occupied", "Log population density"
+)
+
+stargazer(
+  ols_full, ols_2500, ols_5000,
+  type = "text",
+  title = "Extended OLS Model: Full Sample vs. Population Thresholds",
+  column.labels = c("Full sample", "2,500+ threshold", "5,000+ threshold"),
+  dep.var.labels = "Log(Surveillance Index per 100k + 1)",
+  covariate.labels = shared_labels,
+  digits = 3,
+  omit.stat = c("f", "ser"),
+  notes = "* p<0.05; ** p<0.01; *** p<0.001",
+  notes.append = FALSE,
+  out = "figures/extended_ols_comparisons_table.html"
+)
+```
+
+```{r}
+stargazer(
+  ols_full, ols_2500, ols_5000,
+  type = "html",
+  title = "Extended OLS Model: Full Sample vs. Population Thresholds",
+  column.labels = c("Full sample", "2,500+ threshold", "5,000+ threshold"),
+  dep.var.labels = "Log(Surveillance Index per 100k + 1)",
+  covariate.labels = shared_labels,
+  digits = 3,
+  omit.stat = c("f", "ser"),
+  notes = "* p<0.05; ** p<0.01; *** p<0.001",
+  notes.append = FALSE,
+  out = "figures/extended_ols_comparisons_table.html"
+)
+```
+
+### 11b. SARAR, no controls, isolates control effect at 2,500+
+
+```{r}
+sarar_model_no_controls <- sacsarlm(
+  log1p(weighted_index_per100k) ~ p_black + p_hisp + p_foreign + med_income +
+    gini + med_home_val + p_renter + log_pop_den,
+  data    = spatial_df_full_2500 |> st_drop_geometry(),
+  listw   = spatial_weights_full_2500,
+  zero.policy = TRUE
+)
+summary(sarar_model_no_controls)
+```
+
+### 12. 5000 Threshold Robustness Check
+
+```{r}
+# Dataset and weights
+spatial_df_full_5000 <- spatial_df |>
+  filter(total_pop >= 5000) |>
+  left_join(crime_county_avg,    by = "GEOID") |>
+  left_join(officers_county_avg, by = "GEOID") |>
+  filter(!if_any(c(p_black, p_hisp, p_foreign, med_income, gini, log_pop_den,
+                    med_home_val, p_renter, mean_violent_rate, mean_property_rate,
+                    mean_officers_per_1000), is.na))
+
+cat("Counties retained (5,000+ threshold):", nrow(spatial_df_full_5000), "\n")
+```
+
+```{r}
+weights_full_5000 <- build_spatial_weights(spatial_df_full_5000)
+```
+
+```{r}
+# LM tests
+lm_tests_5000 <- lm.LMtests(
+  lm(full_formula,
+     data = spatial_df_full_5000 |> st_drop_geometry()),
+  weights_full_5000, test = "all", zero.policy = TRUE
+)
+summary(lm_tests_5000)
+```
+
+```{r}
+# SARAR model
+sarar_model_5000 <- sacsarlm(
+  full_formula,
+  data    = spatial_df_full_5000 |> st_drop_geometry(),
+  listw   = weights_full_5000,
+  zero.policy = TRUE
+)
+summary(sarar_model_5000)
+```
+
+```{r}
+moran.test(residuals(sarar_model_5000), weights_full_5000, zero.policy = TRUE)
+```
+
+#### Comparison
+
+```{r}
+spatial_comparison_final <- bind_rows(
+  extract_spatial_model(sarar_model_full,  "Full sample"),
+  extract_spatial_model(sarar_model_final, "2,500+ (primary)"),
+  extract_spatial_model(sarar_model_5000,  "5,000+ (robustness)")
+) |>
+  mutate(
+    estimate_label = paste0(
+      signif(estimate, 3),
+      case_when(
+        p_value == "< 0.0005" ~ "***",
+        as.numeric(p_value) < 0.01  ~ "**",
+        as.numeric(p_value) < 0.05  ~ "*",
+        TRUE ~ ""
+      )
+    )
+  ) |>
+  select(model, term, estimate_label) |>
+  pivot_wider(names_from = model, values_from = estimate_label)
+
+# Model-level stats
+model_level_final <- tibble(
+  model  = c("Full sample", "2,500+ (primary)", "5,000+ (robustness)"),
+  rho    = c(sarar_model_full$rho, sarar_model_final$rho, sarar_model_5000$rho),
+  AIC    = c(AIC(sarar_model_full), AIC(sarar_model_final), AIC(sarar_model_5000)),
+  n      = c(nobs(sarar_model_full), nobs(sarar_model_final), nobs(sarar_model_5000))
+)
+
+spatial_comparison_final
+```
+
+```{r}
+model_level_final
+```
+
+## State and Federal Agencies Robustness Check
+
+### 13. All agencies robustness check - SARAR with controls, 2,500+ threshold, all agencies
+
+```{r}
+atlas_clean_all_agencies <- atlas |>
+  relocate(state, .before = state_abb) |>
+  mutate(
+    state = str_to_title(state),
+    county = case_when(
+      state == "Virginia" & county == "Manassas" & agency == "Manassas Park City Police Department" ~ "Manassas Park City",
+      TRUE ~ county
+    )
+  ) |>
+  left_join(corrections |> select(state, county, correct_county, correct_state),
+            by = c("state", "county"), relationship = "many-to-many") |>
+  mutate(
+    county = coalesce(correct_county, county),
+    state  = coalesce(correct_state, state)
+  ) |>
+  select(-correct_county, -correct_state)
+
+cat("Records (all agencies):", nrow(atlas_clean_all_agencies), "\n")
+```
+
+```{r}
+cat("Records (primary, local only):", nrow(atlas_clean), "\n")
+```
+
+```{r}
+atlas_county_all <- atlas_clean_all_agencies |>
+  mutate(
+    county_clean = str_to_title(
+      str_remove(county,
+        regex(" County$| Parish$| Borough$| City And Borough$| Census Area$| Municipality$| Municipio$| Municipality County$| Islands?$",
+              ignore_case = TRUE))
+    )
+  ) |>
+  left_join(fips_xwalk, by = c("state" = "state_name", "county_clean" = "county_name")) |>
+  left_join(tech_weights, by = "technology") |>
+  mutate(weight = replace_na(weight, 1)) |>
+  filter(!is.na(GEOID)) |>
+  group_by(GEOID) |>
+  summarise(
+    state              = first(state),
+    county             = first(county),
+    n_records          = n(),
+    n_agencies         = n_distinct(agency),
+    n_tech_types       = n_distinct(technology),
+    raw_weighted_index = sum(weight, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+cat("atlas_county_all rows:", nrow(atlas_county_all), "\n")
+```
+
+```{r}
+analysis_df_all <- acs |>
+  left_join(atlas_county_all |> st_drop_geometry() |> select(GEOID, n_records, n_agencies, n_tech_types, raw_weighted_index),
+            by = "GEOID") |>
+  mutate(
+    across(c(n_records, n_agencies, n_tech_types, raw_weighted_index), ~ replace_na(., 0)),
+    weighted_index_per100k = raw_weighted_index / total_pop * 100000
+  )
+
+cat("analysis_df_all rows:", nrow(analysis_df_all), "\n")
+```
+
+```{r}
+spatial_df_all <- analysis_df_all |>
+  filter(!st_is_empty(geometry)) |>
+  filter(!is.na(weighted_index_per100k))
+
+cat("spatial_df_all rows:", nrow(spatial_df_all), "\n")
+```
+
+```{r}
+spatial_df_full_all <- spatial_df_all |>
+  left_join(crime_county_avg,    by = "GEOID") |>
+  left_join(officers_county_avg, by = "GEOID") |>
+  filter(total_pop >= 2500) |>
+  filter(!if_any(c(p_black, p_hisp, p_foreign, med_income, gini, log_pop_den,
+                    med_home_val, p_renter, mean_violent_rate, mean_property_rate,
+                    mean_officers_per_1000), is.na))
+
+cat("Counties retained (all agencies, 2,500+):", nrow(spatial_df_full_all), "\n")
+```
+
+```{r}
+weights_full_all <- build_spatial_weights(spatial_df_full_all)
+```
+
+```{r}
+sarar_model_all_agencies <- sacsarlm(
+  full_formula,
+  data    = spatial_df_full_all |> st_drop_geometry(),
+  listw   = weights_full_all,
+  zero.policy = TRUE
+)
+summary(sarar_model_all_agencies)
+```
+
+```{r}
+moran.test(residuals(sarar_model_all_agencies), weights_full_all, zero.policy = TRUE)
+```
+
+```{r}
+screenreg(
+  list(
+    "Final model (local agencies only)"  = sarar_model_final,
+    "Robustness (all agencies included)" = sarar_model_all_agencies
+  ),
+  digits = 3, include.se = FALSE
+)
+```
+
+```{r}
+# Most direct check: does atlas_clean_all_agencies contain ANY state/federal agency records?
+atlas_clean_all_agencies |> filter(lea_type %in% problem_types) |> nrow()
+```
+
+## Testing Neighbourhood Matrix
+
+```{r}
+# Average number of neighbours per county, for your final model's spatial weights
+neighbour_counts <- card(spatial_weights_full_2500$neighbours)   # card() gives the neighbour count for each region
+
+summary(neighbour_counts)   # min, max, median, mean
+```
+
+```{r}
+table(card(spatial_weights_full_2500$neighbours))
+```
+
+```{r}
+cat("Average number of neighbours per county (queen contiguity):", round(mean(neighbour_counts), 2), "\n")
+```
+
+```{r}
+cat("Range:", min(neighbour_counts), "to", max(neighbour_counts), "\n")
+```
+
+```{r}
+cat("Isolated counties (0 neighbours):", sum(neighbour_counts == 0), "\n")
+```
+
+```{r}
+neighbour_comparison <- tibble(
+  sample = c("Full sample", "2,500+ threshold", "5,000+ threshold"),
+  mean_neighbours = c(
+    mean(card(spatial_weights_extended$neighbours)),
+    mean(card(spatial_weights_full_2500$neighbours)),
+    mean(card(weights_full_5000$neighbours))   # adjust object name to match yours
+  ),
+  n_isolated = c(
+    sum(card(spatial_weights_extended$neighbours) == 0),
+    sum(card(spatial_weights_full_2500$neighbours) == 0),
+    sum(card(weights_full_5000$neighbours) == 0)
+  )
+) |>
+  mutate(mean_neighbours = round(mean_neighbours, 2))
+
+neighbour_comparison
+```
+
+### K-NN Alternative
+
+#### Selecting K
+
+```{r}
+# knn_listw() and scan_k() are defined once in 00_setup.qmd
+coords_2500 <- st_coordinates(st_point_on_surface(spatial_df_full_2500))
+k_values <- c(4, 6, 8, 10, 12, 15)
+model_data_2500 <- spatial_df_full_2500 |> st_drop_geometry()
+
+# SAR scan (faster) used first to get a rough AIC-optimal k...
+k_results <- map_dfr(k_values, scan_k, coords = coords_2500, data = model_data_2500,
+                      formula = full_formula, fit_fun = lagsarlm)
+k_results
+```
+
+```{r}
+# ...then confirmed with the full SARAR specification
+k_results_sarar <- map_dfr(k_values, scan_k, coords = coords_2500, data = model_data_2500,
+                            formula = full_formula, fit_fun = sacsarlm)
+k_results_sarar
+```
+
+#### 14. k = 6
+
+```{r}
+weights_knn6 <- knn_listw(coords_2500, k = 6)
+
+sarar_model_knn6 <- sacsarlm(
+  full_formula,
+  data    = model_data_2500,
+  listw   = weights_knn6,
+  zero.policy = TRUE
+)
+
+summary(sarar_model_knn6)
+```
+
+```{r}
+moran.test(residuals(sarar_model_knn6), weights_knn6, zero.policy = TRUE)
+```
+
+#### 15. k = 12
+
+```{r}
+weights_knn12 <- knn_listw(coords_2500, k = 12)
+
+sarar_model_knn12 <- sacsarlm(
+  full_formula,
+  data  = model_data_2500,
+  listw = weights_knn12,
+  zero.policy = TRUE
+)
+
+summary(sarar_model_knn12)
+```
+
+```{r}
+moran.test(residuals(sarar_model_knn12), weights_knn12, zero.policy = TRUE)
+```
+
+#### K-NN Comparison
+
+```{r}
+screenreg(
+  list(
+    "SARAR (queen)"  = sarar_model_final,
+    "SARAR (KNN=6)"  = sarar_model_knn6,
+    "SARAR (KNN=12)" = sarar_model_knn12
+  ),
+  digits = 3,
+  include.se = FALSE
+)
+```
+
+```{r}
+htmlreg(
+  list(
+    "SARAR (queen)"  = sarar_model_final,
+    "SARAR (KNN=6)"  = sarar_model_knn6,
+    "SARAR (KNN=12)" = sarar_model_knn12
+  ),
+  digits = 3,
+  include.se = FALSE,
+  file = "figures/neighbour_structure_comparison.html"
+)
+```
+
+```{r}
+neighbour_diagnostics <- tibble(
+  specification = c("SARAR (queen)", "SARAR (KNN=6)", "SARAR (KNN=12)"),
+  mean_neighbours = c(
+    mean(card(spatial_weights_full_2500$neighbours)),
+    mean(card(weights_knn6$neighbours)),
+    mean(card(weights_knn12$neighbours))
+  ),
+  AIC = c(
+    AIC(sarar_model_final),
+    AIC(sarar_model_knn6),
+    AIC(sarar_model_knn12)
+  ),
+  moran_i_residuals = c(
+    moran.test(residuals(sarar_model_final), spatial_weights_full_2500, zero.policy = TRUE)$estimate[1],
+    moran.test(residuals(sarar_model_knn6), weights_knn6, zero.policy = TRUE)$estimate[1],
+    moran.test(residuals(sarar_model_knn12), weights_knn12, zero.policy = TRUE)$estimate[1]
+  ),
+  moran_p_value = c(
+    moran.test(residuals(sarar_model_final), spatial_weights_full_2500, zero.policy = TRUE)$p.value,
+    moran.test(residuals(sarar_model_knn6), weights_knn6, zero.policy = TRUE)$p.value,
+    moran.test(residuals(sarar_model_knn12), weights_knn12, zero.policy = TRUE)$p.value
+  )
+) |>
+  mutate(across(where(is.numeric), ~round(., 4)))
+
+neighbour_diagnostics
+```

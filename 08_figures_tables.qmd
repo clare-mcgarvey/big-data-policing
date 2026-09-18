@@ -1,0 +1,543 @@
+---
+title: "Tables and Figures for Final Report"
+format: html
+---
+
+## Tables and Graphs for Final Report
+
+```{r}
+ggsave("figures/surveillance_index_map.png", width = 10, height = 7, dpi = 300, bg = "white")
+```
+
+### Descriptive Variables
+
+```{r}
+library(stargazer)
+
+descriptive_vars <- tibble::tribble(
+  ~variable,                    ~label,
+  "weighted_index_per100k",     "Surveillance index (per 100,000 population)",
+  "n_records",                  "Number of Atlas of Surveillance records",
+  "n_agencies",                 "Number of distinct agencies",
+  "n_tech_types",                "Number of distinct technology types",
+  "p_black",                     "Percent Black",
+  "p_hisp",                      "Percent Hispanic",
+  "p_foreign",                   "Percent foreign-born",
+  "med_income",                  "Median household income",
+  "med_home_val",                "Median home value",
+  "gini",                        "Gini coefficient",
+  "p_renter",                    "Percent renter-occupied",
+  "poverty_rate",                "Poverty rate",
+  "p_edu_hs",                    "Percent high school educated",
+  "p_edu_ba",                    "Percent bachelor's educated",
+  "pop_den",                     "Population density (per km²)",
+  "p_pt_to_work",                "Percent public transit commuters",
+  "p_uninsured",                 "Percent without health insurance",
+  "mean_violent_rate",           "Log mean violent crime rate (per 100,000)",
+  "mean_property_rate",          "Log mean property crime rate (per 100,000)",
+  "mean_officers_per_1000",      "Log mean sworn officers per 1,000 residents",
+  "total_pop",                   "Total population"
+)
+
+descriptive_data <- spatial_df_full_2500 |>
+  st_drop_geometry() |>
+  select(any_of(descriptive_vars$variable)) |>
+  as.data.frame()
+
+stargazer(
+  descriptive_data,
+  type = "text",
+  title = paste0("Descriptive Statistics for ", nrow(descriptive_data), " Counties"),
+  covariate.labels = descriptive_vars$label[match(names(descriptive_data), descriptive_vars$variable)],
+  summary.stat = c("mean", "sd", "min", "max"),
+  digits = 3,
+  notes = paste0("N = ", nrow(descriptive_data)),
+  notes.align = "l"
+)
+```
+
+```{r}
+stargazer(
+  descriptive_data,
+  type = "html",
+  title = paste0("Descriptive Statistics for ", nrow(descriptive_data), " Counties"),
+  covariate.labels = descriptive_vars$label[match(names(descriptive_data), descriptive_vars$variable)],
+  summary.stat = c("mean", "sd", "min", "max"),
+  digits = 3,
+  notes = paste0("N = ", nrow(descriptive_data)),
+  notes.align = "l",
+  out = "figures/descriptive_table.html"
+)
+```
+
+### VIFs
+
+```{r}
+ols_final_check <- lm(
+  full_formula,
+  data = spatial_df_full_2500 |> st_drop_geometry()
+)
+
+vif_table <- vif(ols_final_check) |>
+  as.data.frame() |>
+  rownames_to_column(var = "term") |>
+  rename(VIF = 2) |>
+  mutate(VIF = round(VIF, 3))
+
+vif_table
+```
+
+```{r}
+stargazer(
+  vif_table,
+  type = "text",
+  summary = FALSE,
+  rownames = FALSE,
+  title = "Variance Inflation Factors: Final Model Predictors",
+  covariate.labels = c("Term", "VIF"),
+  out = "figures/vif_table.html"
+)
+```
+
+```{r}
+stargazer(
+  vif_table,
+  type = "html",
+  summary = FALSE,
+  rownames = FALSE,
+  title = "Variance Inflation Factors: Final Model Predictors",
+  covariate.labels = c("Term", "VIF"),
+  out = "figures/vif_table.html"
+)
+```
+
+### SARAR final model
+
+```{r}
+screenreg(
+  list("Final Model\n(SARAR, 2,500+)" = sarar_model_final),
+  digits = 3,
+  include.se = TRUE,
+  custom.coef.names = c(
+    "Intercept", "Proportion Black", "Proportion Hispanic", "Proportion foreign-born",
+    "Median income", "Gini coefficient", "Median home value", "Proportion renter-occupied",
+    "Log population density", "Log mean violent crime rate", "Log mean property crime rate",
+    "Log mean officers per 1,000", "Rho", "Lambda"
+  )
+)
+```
+
+```{r}
+htmlreg(
+  list("Final Model\n(SARAR, 2,500+)" = sarar_model_final),
+  digits = 3,
+  include.se = TRUE,
+  custom.coef.names = c(
+    "Intercept", "Proportion Black", "Proportion Hispanic", "Proportion foreign-born",
+    "Median income", "Gini coefficient", "Median home value", "Proportion renter-occupied",
+    "Log population density", "Log mean violent crime rate", "Log mean property crime rate",
+    "Log mean officers per 1,000", "Rho", "Lambda"
+  ),
+  file = "figures/final_model_summary.html"
+)
+```
+
+#### Spatial Effects
+
+```{r}
+display_labels <- c(
+  "p_black"                = "Proportion Black",
+  "p_hisp"                 = "Proportion Hispanic",
+  "p_foreign"               = "Proportion foreign-born",
+  "med_income"              = "Median income",
+  "gini"                    = "Gini coefficient",
+  "med_home_val"            = "Median home value",
+  "p_renter"                = "Proportion renter-occupied",
+  "log_pop_den"             = "Log population density",
+  "mean_violent_rate"       = "Log mean violent crime rate",
+  "mean_property_rate"      = "Log mean property crime rate",
+  "mean_officers_per_1000"  = "Log mean officers per 1,000"
+)
+```
+
+```{r}
+effects_table <- tibble(
+  term = c("Proportion Black", "Proportion Hispanic", "Proportion foreign-born",
+           "Median income", "Gini coefficient", "Median home value",
+           "Proportion renter-occupied", "Log population density",
+           "Log mean violent crime rate", "Log mean property crime rate",
+           "Log mean officers per 1,000"),
+  direct   = c(-0.477, 0.377, -1.579, 0.0000009, -0.492, 0.0000002, -0.920, 0.103, 0.074, 0.146, 0.626),
+  indirect = c(-1.071, 0.848, -3.546, 0.0000019, -1.105, 0.0000006, -2.066, 0.231, 0.165, 0.329, 1.405),
+  total    = c(-1.548, 1.225, -5.124, 0.0000028, -1.597, 0.0000008, -2.986, 0.333, 0.239, 0.475, 2.030),
+  direct_p   = c(0.007, 0.077, 0.019, 0.647, 0.607, 0.281, 0.010, "<0.001", 0.044, 0.001, "<0.001"),
+  indirect_p = c(0.008, 0.079, 0.021, 0.647, 0.618, 0.291, 0.012, "<0.001", 0.050, 0.002, "<0.001"),
+  total_p    = c(0.007, 0.077, 0.020, 0.646, 0.614, 0.287, 0.011, "<0.001", 0.047, 0.001, "<0.001")
+)
+
+effects_table
+```
+
+```{r}
+effects_table_formatted <- effects_table |>
+  mutate(
+    direct_stars = case_when(
+      direct_p == "<0.001" ~ "***",
+      as.numeric(direct_p) < 0.01 ~ "**",
+      as.numeric(direct_p) < 0.05 ~ "*",
+      TRUE ~ ""
+    ),
+    indirect_stars = case_when(
+      indirect_p == "<0.001" ~ "***",
+      as.numeric(indirect_p) < 0.01 ~ "**",
+      as.numeric(indirect_p) < 0.05 ~ "*",
+      TRUE ~ ""
+    ),
+    total_stars = case_when(
+      total_p == "<0.001" ~ "***",
+      as.numeric(total_p) < 0.01 ~ "**",
+      as.numeric(total_p) < 0.05 ~ "*",
+      TRUE ~ ""
+    ),
+    direct_label   = paste0(formatC(direct, format = "f", digits = 3), direct_stars),
+    indirect_label = paste0(formatC(indirect, format = "f", digits = 3), indirect_stars),
+    total_label    = paste0(formatC(total, format = "f", digits = 3), total_stars)
+  ) |>
+  select(term, direct_label, indirect_label, total_label)
+
+effects_table_formatted
+```
+
+```{r}
+stargazer(
+  effects_table_formatted,
+  type = "html",
+  summary = FALSE,
+  rownames = FALSE,
+  title = "Direct, Indirect, and Total Effects (SARAR Final Model)",
+  covariate.labels = c("Variable", "Direct", "Indirect", "Total"),
+  notes = "*** p < 0.001; ** p < 0.01; * p < 0.05. Estimates from spatialreg::impacts() with 200 simulation draws.",
+  out = "figures/effects_table.html"
+)
+```
+
+#### Coefficient Plot
+
+```{r}
+library(broom)
+
+# Extract coefficients, SEs, and build 95% CIs
+coef_plot_data <- extract_spatial_model(sarar_model_final, "Final Model") |>
+  mutate(
+    ci_lower = estimate - 1.96 * std_error,
+    ci_upper = estimate + 1.96 * std_error,
+    term_label = case_when(
+      term == "p_black"                 ~ "Proportion Black",
+      term == "p_hisp"                  ~ "Proportion Hispanic",
+      term == "p_foreign"                ~ "Proportion foreign-born",
+      term == "med_income"               ~ "Median income",
+      term == "gini"                     ~ "Gini coefficient",
+      term == "med_home_val"             ~ "Median home value",
+      term == "p_renter"                 ~ "Proportion renter-occupied",
+      term == "log_pop_den"              ~ "Population density (logged)",
+      term == "mean_violent_rate"        ~ "Violent crime rate (logged)",
+      term == "mean_property_rate"       ~ "Property crime rate (logged)",
+      term == "mean_officers_per_1000"   ~ "Officers per 1,000 (logged)",
+      TRUE ~ term
+    ),
+    category = case_when(
+      term %in% c("p_black", "p_hisp", "p_foreign") ~ "Demographic",
+      term %in% c("med_income", "gini", "med_home_val", "p_renter") ~ "Property",
+      term %in% c("log_pop_den", "mean_violent_rate", "mean_property_rate", "mean_officers_per_1000") ~ "Controls",
+      TRUE ~ "Other"
+    )
+  ) |>
+  filter(term != "(Intercept)")
+
+
+# Coefficient plot
+coef_plot <- ggplot(
+  coef_plot_data,
+  aes(x = estimate, y = term_label)
+) +
+  geom_vline(
+    xintercept = 0,
+    linetype = "dashed",
+    linewidth = 0.5,
+    colour = "grey55"
+  ) +
+  geom_errorbarh(
+    aes(
+      xmin = ci_lower,
+      xmax = ci_upper
+    ),
+    colour = "grey40",
+    height = 0.10,
+    linewidth = 0.7
+  ) +
+  geom_point(
+    aes(colour = category),
+    size = 3.2
+  ) +
+  facet_grid(
+    category ~ .,
+    scales = "free_y",
+    space = "free_y",
+    switch = "y"
+  ) +
+  scale_colour_manual(
+    values = c(
+      "Demographic" = "#d41243",
+      "Property"    = "#7eb0ea",
+      "Controls"    = "#d896ff"
+    )
+  ) +
+  labs(
+    title = "Estimated Associations Between County Characteristics and Surveillance Index",
+    x = "Coefficient estimate (95% CI)",
+    y = NULL
+  ) +
+  theme_minimal(
+    base_family = "Times New Roman",
+    base_size = 12
+  ) +
+  theme(
+    plot.title.position = "plot",
+    plot.title = element_text(
+      family = "Times New Roman",
+      face = "bold",
+      size = 15.5,
+      hjust = 0.5,
+      margin = margin(
+        t = 5,
+        r = 0,
+        b = 18,
+        l = 0
+      )
+    ),
+    axis.title.x = element_text(
+      size = 12,
+      margin = margin(t = 10)
+    ),
+
+    axis.text.y = element_text(
+      size = 10.5,
+      colour = "black"
+    ),
+
+    axis.text.x = element_text(
+      size = 10,
+      colour = "black"
+    ),
+    strip.placement = "outside",
+
+    strip.text.y.left = element_text(
+      family = "Times New Roman",
+      face = "bold",
+      size = 11,
+      angle = 90,
+      colour = "black",
+      margin = margin(r = 10)
+    ),
+    panel.grid.major.y = element_line(
+      linewidth = 0.25,
+      colour = "grey88"
+    ),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_line(
+      linewidth = 0.25,
+      colour = "grey88"
+    ),
+    panel.border = element_blank(),
+    legend.position = "none",
+    panel.spacing.y = unit(0, "lines"),
+    plot.margin = margin(
+      t = 15,
+      r = 15,
+      b = 15,
+      l = 15
+    )
+  )
+
+save_figure(coef_plot, "final_model_coefficient_plot.png",
+  width = 9, height = 7.5)
+```
+
+```{r}
+coef_plot
+```
+
+### Spatial Models Comparison
+
+```{r}
+screenreg(
+  list(
+    "Final model (2,500+)"        = sarar_model_final,
+    "SARAR, no controls (2,500+)"   = sarar_model_no_controls,
+    "Robustness (no threshold)"     = sarar_model_full,
+    "Robustness (5,000+)"         = sarar_model_5000,
+    "Robustness (all LEAs, 2500+)"      = sarar_model_all_agencies
+  ),
+  digits = 3,
+  include.se = FALSE
+)
+```
+
+```{r}
+htmlreg(
+  list(
+    "Final model (2,500+)"        = sarar_model_final,
+    "SARAR, no controls (2,500+)"   = sarar_model_no_controls,
+    "Robustness (no threshold)"     = sarar_model_full,
+    "Robustness (5,000+)"         = sarar_model_5000,
+    "Robustness (all LEAs, 2500+)"      = sarar_model_all_agencies
+  ),
+  digits = 3,
+  include.se = FALSE,
+  file = "figures/sarar_controls_comparison.html"
+)
+```
+
+### Spatial Matrix
+
+```{r}
+neighbour_counts <- card(spatial_weights_full_2500$neighbours)
+
+neighbour_summary <- data.frame(
+  Statistic = c("Minimum", "1st Quartile", "Median", "Mean", "3rd Quartile", "Maximum"),
+  Value = c(
+    min(neighbour_counts),
+    quantile(neighbour_counts, 0.25),
+    median(neighbour_counts),
+    mean(neighbour_counts),
+    quantile(neighbour_counts, 0.75),
+    max(neighbour_counts)
+  )
+)
+
+stargazer(
+  neighbour_summary,
+  type = "html",
+  summary = FALSE,
+  rownames = FALSE,
+  title = "Summary Statistics of Neighbour Counts",
+  covariate.labels = c("Statistic", "Value"),
+  digits = 3,
+  out = "figures/neighbour_counts_table.html"
+)
+```
+
+```{r}
+bind_rows(
+  spatial_df_full_2500 |>
+    st_drop_geometry() |>
+    arrange(desc(total_pop)) |>
+    slice_head(n = 10) |>
+    mutate(group = "Highest population"),
+  spatial_df_full_2500 |>
+    st_drop_geometry() |>
+    arrange(total_pop) |>
+    slice_head(n = 10) |>
+    mutate(group = "Lowest population")
+) |>
+  select(group, NAME, total_pop, weighted_index_per100k) |>
+  print(n = 20)
+```
+
+### Final Dataset
+
+```{r}
+final_model_comparison <- tibble(
+  model = c("Final Model (2,500+)", "SARAR, no controls", "Robustness (no threshold)",
+            "Robustness (5,000+)", "Robustness (all LEAs, 2,500+)"),
+  data  = list(spatial_df_full_2500, spatial_df_full_2500, spatial_df_full, 
+               spatial_df_full_5000, spatial_df_full_all)
+) |>
+  mutate(
+    n         = map_int(data, nrow),
+    n_zero    = map_int(data, ~sum(.x$weighted_index_per100k == 0, na.rm = TRUE)),
+    pct_zero  = scales::percent(n_zero / n, accuracy = 0.3)
+  ) |>
+  select(model, n, n_zero, pct_zero)
+
+final_model_comparison
+```
+
+#### State Coverage
+
+```{r}
+state_coverage_final <- spatial_df_full_2500 |>
+  st_drop_geometry() |>
+  mutate(state = str_extract(NAME, "(?<=, ).*$")) |>
+  group_by(state) |>
+  summarise(
+    total_counties = n_distinct(GEOID),
+    n_with_documentation = n_distinct(GEOID[weighted_index_per100k > 0]),
+    .groups = "drop"
+  ) |>
+  mutate(
+    pct_coverage = n_with_documentation / total_counties,
+    state = fct_reorder(state, pct_coverage)
+  )
+```
+
+#### Coverage-Cofound
+
+```{r}
+check_data_final <- spatial_df_full_2500 |>
+  st_drop_geometry() |>
+  mutate(state = str_extract(NAME, "(?<=, ).*$")) |>
+  group_by(state) |>
+  summarise(
+    mean_index = mean(weighted_index_per100k, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  left_join(
+    state_coverage_final |> select(state, pct_coverage),
+    by = "state"
+  )
+
+# Correlation
+cat(
+  "Spearman correlation",
+  cor(
+    check_data_final$pct_coverage,
+    check_data_final$mean_index,
+    method = "spearman",
+    use = "complete.obs"
+  ),
+  "\n"
+)
+```
+
+```{r}
+# Plot
+coverage_cofound_plot <- ggplot(check_data_final, aes(x = pct_coverage, y = mean_index)) +
+  geom_point() +
+  geom_smooth(method = "loess") +
+  labs(
+    title = "Coverage-Cofound",
+    subtitle = "Spearman ρ = 0.345",
+    x = "AOS documentation coverage (% of counties in each state with documentation)",
+    y = "Mean surveillance index"
+  ) + 
+  theme(
+    text = element_text(family = "Times New Roman"),
+    plot.title = element_text(size = 18, face = "bold"),
+    plot.subtitle = element_text(size = 14),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12),
+    panel.background = element_rect(fill = "grey90", colour = NA),
+    plot.background = element_rect(fill = "white", colour = NA),
+    panel.grid.major = element_line(colour = "white"),
+    panel.grid.minor = element_line(colour = "white")
+  )
+
+coverage_cofound_plot
+```
+
+```{r}
+save_figure(
+  coverage_cofound_plot,
+  "documentation_coverage_vs_surveillance.png")
+```

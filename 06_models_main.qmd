@@ -1,0 +1,527 @@
+---
+title: "Main Models: Selection and Final SARAR Specification"
+format: html
+---
+
+## Models
+
+### Baseline OLS Model: Raw vs. Logged Index
+
+Two minimal specifications are compared here purely to justify the log
+transform used everywhere downstream — this is not a model reported in the
+paper. `diagnose_lm()` (defined in `00_setup.qmd`) prints a residuals-vs-fitted
+and scale-location plot and returns Cook's D so the two specifications can be
+compared without duplicating plotting code.
+
+```{r}
+ols_model_raw <- lm(
+  weighted_index_per100k ~ p_black + p_hisp + p_foreign +
+    med_income + gini + log_pop_den,
+  data = spatial_df |> st_drop_geometry()
+)
+
+ols_model_log <- lm(
+  log1p(weighted_index_per100k) ~ p_black + p_hisp + p_foreign +
+    med_income + gini + log_pop_den,
+  data = spatial_df |> st_drop_geometry()
+)
+
+# Logged specification gives much better-behaved residuals (see plots below),
+# so log1p(weighted_index_per100k) is used for every model from here on.
+summary(ols_model_log)
+```
+
+```{r}
+diagnose_lm(ols_model_raw, label = "Raw index")
+diagnose_lm(ols_model_log, label = "Logged index")
+```
+
+### 3. OLS Additional Predictors (extended)
+
+```{r}
+# Extended model: adding median home value and proportion renter 
+ols_model_extended <- lm(
+  log_index ~ p_black + p_hisp + p_foreign + 
+    med_income + gini + med_home_val + p_renter + log_pop_den,
+  data = spatial_df |> 
+    st_drop_geometry() |> 
+    mutate(log_index = log1p(weighted_index_per100k))
+)
+
+summary(ols_model_extended)
+```
+
+```{r}
+car::vif(ols_model_extended)
+```
+
+```{r}
+# extract_model() is defined once in 00_setup.qmd and reused here and in 07_robustness.qmd
+comparison_wide <- bind_rows(
+  extract_model(ols_model_log,      "Baseline"),
+  extract_model(ols_model_extended, "Extended")
+) |>
+  mutate(estimate_label = paste0(
+    round(estimate, 3),
+    case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01  ~ "**",
+      p.value < 0.05  ~ "*",
+      TRUE ~ ""
+    )
+  )) |>
+  select(model, term, estimate_label) |>
+  pivot_wider(names_from = model, values_from = estimate_label)
+
+model_stats <- tibble(
+  model  = c("Baseline", "Extended"),
+  adj_r2 = c(glance(ols_model_log)$adj.r.squared, glance(ols_model_extended)$adj.r.squared),
+  n      = c(nobs(ols_model_log), nobs(ols_model_extended))
+)
+
+comparison_wide
+```
+
+```{r}
+model_stats
+```
+
+```{r}
+cooks_d_extended <- diagnose_lm(ols_model_extended, label = "Extended model")
+```
+
+## Spatial Weights Updated
+
+```{r}
+spatial_df_extended <- spatial_df |>
+  filter(!if_any(c(p_black, p_hisp, p_foreign, med_income, gini, log_pop_den, med_home_val, p_renter), is.na))
+
+spatial_weights_extended <- build_spatial_weights(spatial_df_extended)
+```
+
+### Rebuild dataset at final population threshold (2,500+)
+
+```{r}
+spatial_df_2500 <- spatial_df |> filter(total_pop >= 2500)
+weights_2500 <- build_spatial_weights(spatial_df_2500)
+```
+
+## Lagrange Multiplier Tests
+
+```{r}
+lm_tests_full <- lm.LMtests(
+  ols_model_extended,
+  spatial_weights,     # <- the renamed listw object, not `weights`
+  test = "all",
+  zero.policy = TRUE
+)
+
+summary(lm_tests_full)
+```
+
+### 6. Spatial Lag Model (SAR)
+
+```{r}
+sar_model_extended <- lagsarlm(
+  log1p(weighted_index_per100k) ~ p_black + p_hisp + p_foreign + med_income +
+    gini + med_home_val + p_renter + log_pop_den,
+  data    = spatial_df_extended |> st_drop_geometry(),
+  listw   = spatial_weights_extended,
+  zero.policy = TRUE
+)
+
+summary(sar_model_extended)
+```
+
+```{r}
+moran.test(residuals(sar_model_extended), spatial_weights_extended, zero.policy = TRUE)
+```
+
+### 7. Spatial Durbin Model (SDM)
+
+```{r}
+sdm_model_extended <- lagsarlm(
+  log1p(weighted_index_per100k) ~ p_black + p_hisp + p_foreign + med_income +
+    gini + med_home_val + p_renter + log_pop_den,
+  data    = spatial_df_extended |> st_drop_geometry(),
+  listw   = spatial_weights_extended,
+  zero.policy = TRUE,
+  Durbin  = TRUE
+)
+
+summary(sdm_model_extended)
+```
+
+```{r}
+moran.test(residuals(sdm_model_extended), spatial_weights_extended, zero.policy = TRUE)
+```
+
+```{r}
+LR.Sarlm(sdm_model_extended, sar_model_extended)
+```
+
+### 8. SARAR
+
+```{r}
+sarar_model_extended <- sacsarlm(
+  log1p(weighted_index_per100k) ~ p_black + p_hisp + p_foreign + med_income +
+    gini + med_home_val + p_renter + log_pop_den,
+  data    = spatial_df_extended |> st_drop_geometry(),
+  listw   = spatial_weights_extended,
+  zero.policy = TRUE
+)
+summary(sarar_model_extended)
+```
+
+```{r}
+moran.test(residuals(sarar_model_extended), spatial_weights_extended, zero.policy = TRUE)
+```
+
+### Comparison
+
+```{r}
+# extract_spatial_model() is defined once in 00_setup.qmd and reused throughout
+spatial_comparison <- bind_rows(
+  extract_spatial_model(sar_model_extended, "SAR"),
+  extract_spatial_model(sdm_model_extended, "SDM")
+) |>
+  mutate(
+    estimate = signif(estimate, 4),
+    p_value  = case_when(
+      p_value < 0.0005 ~ "< 0.0005",
+      TRUE ~ as.character(round(p_value, 4))
+    )
+  ) |>
+  arrange(term, model)
+
+print(spatial_comparison)
+```
+
+```{r}
+# Model-level comparison: rho, AIC, log-likelihood, residual autocorrelation
+model_level_comparison <- tibble(
+  model      = c("SAR", "SDM"),
+  rho        = c(sar_model_extended$rho, sdm_model_extended$rho),
+  rho_pvalue = c(summary(sar_model_extended)$rho.pval, summary(sdm_model_extended)$rho.pval),
+  AIC        = c(AIC(sar_model_extended), AIC(sdm_model_extended)),
+  logLik     = c(logLik(sar_model_extended), logLik(sdm_model_extended)),
+  n          = c(nobs(sar_model_extended), nobs(sdm_model_extended))
+)
+
+model_level_comparison
+```
+
+```{r}
+library(texreg)
+
+screenreg(
+  list(
+    "SAR"   = sar_model_extended,
+    "SDM"   = sdm_model_extended,
+    "SARAR" = sarar_model_extended
+  ),
+  digits = 3,
+  include.se = FALSE
+)
+```
+
+```{r}
+htmlreg(
+  list("SAR" = sar_model_extended, 
+       "SDM" = sdm_model_extended, 
+       "SARAR" = sarar_model_extended),
+  digits = 3,
+  include.se = FALSE,
+  file = "figures/sar_sdm_sarar_comparison.html"
+)
+```
+
+```{r}
+# Assumes: sar_model_extended, sdm_model_extended, sarar_model_extended already fit
+# on spatial_df_extended / spatial_weights_extended
+
+model_comparison_extended <- tibble(
+  model   = c("SAR", "SDM", "SARAR"),
+  rho     = c(sar_model_extended$rho, sdm_model_extended$rho, sarar_model_extended$rho),
+  lambda  = c(NA, NA, sarar_model_extended$lambda),
+  AIC     = c(AIC(sar_model_extended), AIC(sdm_model_extended), AIC(sarar_model_extended)),
+  logLik  = c(logLik(sar_model_extended), logLik(sdm_model_extended), logLik(sarar_model_extended)),
+  n       = c(
+    length(residuals(sar_model_extended)),
+    length(residuals(sdm_model_extended)),
+    length(residuals(sarar_model_extended))
+  ),
+  moran_i = c(
+    moran.test(residuals(sar_model_extended), spatial_weights_extended, zero.policy = TRUE)$estimate[["Moran I statistic"]],
+    moran.test(residuals(sdm_model_extended), spatial_weights_extended, zero.policy = TRUE)$estimate[["Moran I statistic"]],
+    moran.test(residuals(sarar_model_extended), spatial_weights_extended, zero.policy = TRUE)$estimate[["Moran I statistic"]]
+  ),
+  moran_p = c(
+    moran.test(residuals(sar_model_extended), spatial_weights_extended, zero.policy = TRUE)$p.value,
+    moran.test(residuals(sdm_model_extended), spatial_weights_extended, zero.policy = TRUE)$p.value,
+    moran.test(residuals(sarar_model_extended), spatial_weights_extended, zero.policy = TRUE)$p.value
+  )
+) |>
+  mutate(across(where(is.numeric), ~round(., 4)))
+
+model_comparison_extended
+```
+
+```{r}
+stargazer(
+  model_comparison_extended,
+  type = "html",
+  title = "Spatial Model Comparison",
+  summary = FALSE,
+  rownames = FALSE,
+  digits = 3,
+  out = "figures/model_comparison_extended.html"
+)
+```
+
+```{r}
+# Is SDM significantly better than SAR?
+LR.Sarlm(sdm_model_extended, sar_model_extended)
+```
+
+```{r}
+# Is SARAR significantly better than SAR?
+LR.Sarlm(sarar_model_extended, sar_model_extended)
+```
+
+```{r}
+anova(sdm_model_extended, sarar_model_extended)
+```
+
+## Merge Crime and Officer Controls
+
+`crime_county_avg` and `officers_county_avg` were built in `02_build_acs_ucr.qmd`;
+they are joined here because this is the first point where `spatial_df_extended`
+(built above, under "Spatial Weights Updated") exists to join them onto.
+
+```{r}
+spatial_df_extended <- spatial_df_extended |>
+  left_join(crime_county_avg, by = "GEOID")
+
+# Check merge success rate
+spatial_df_extended |> st_drop_geometry() |>
+  summarise(
+    n_total = n(),
+    n_missing_crime = sum(is.na(mean_violent_rate))
+  )
+```
+
+```{r}
+# Coverage check — how many counties have full 5-year coverage vs. partial?
+crime_county_avg |> count(n_years_reported)
+```
+
+```{r}
+# Coverage check
+spatial_df_extended |> st_drop_geometry() |>
+  summarise(
+    n_total          = n(),
+    n_with_crime     = sum(!is.na(mean_violent_rate)),
+    n_missing_crime  = sum(is.na(mean_violent_rate)),
+    pct_coverage     = scales::percent(n_with_crime / n_total, accuracy = 0.1),
+    pct_missing      = scales::percent(n_missing_crime / n_total, accuracy = 0.1)
+  )
+```
+
+```{r}
+# Checking if coverage is associated with population 
+spatial_df_extended |> st_drop_geometry() |>
+  mutate(has_crime_data = !is.na(mean_violent_rate)) |>
+  group_by(has_crime_data) |>
+  summarise(
+    n           = n(),
+    mean_pop    = mean(total_pop, na.rm = TRUE),
+    median_pop  = median(total_pop, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+```{r}
+# Merge
+spatial_df_extended <- spatial_df_extended |>
+  left_join(officers_county_avg, by = "GEOID")
+
+spatial_df_extended |> st_drop_geometry() |>
+  summarise(
+    n_total = n(),
+    n_with_officers = sum(!is.na(mean_officers_per_1000)),
+    pct_coverage = scales::percent(n_with_officers / n_total, accuracy = 0.1)
+  )
+```
+
+```{r}
+spatial_df_extended |> st_drop_geometry() |>
+  summarise(
+    missing_both    = sum(is.na(mean_violent_rate) & is.na(mean_officers_per_1000)),
+    missing_crime_only = sum(is.na(mean_violent_rate) & !is.na(mean_officers_per_1000)),
+    missing_officers_only = sum(!is.na(mean_violent_rate) & is.na(mean_officers_per_1000))
+  )
+```
+
+```{r}
+spatial_df_extended |> st_drop_geometry() |>
+  summarise(
+    n_total = n(),
+    n_complete_both = sum(!is.na(mean_violent_rate) & !is.na(mean_officers_per_1000)),
+    n_removed = n_total - n_complete_both,
+    pct_removed = scales::percent(n_removed / n_total, accuracy = 0.1)
+  )
+```
+
+### Distributions
+
+```{r}
+# all 4 variables have been log transformed
+spatial_df_extended |> st_drop_geometry() |>
+  select(log_pop_den, mean_violent_rate, mean_property_rate, mean_officers_per_1000) |>
+  pivot_longer(everything()) |>
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 40) +
+  facet_wrap(~name, scales = "free")
+```
+
+## Models with Controls
+
+```{r}
+# Filter predictors
+spatial_df_full <- spatial_df |>
+  left_join(crime_county_avg,    by = "GEOID") |>
+  left_join(officers_county_avg, by = "GEOID") |>
+  filter(!if_any(c(p_black, p_hisp, p_foreign, med_income, gini, log_pop_den,
+                    med_home_val, p_renter, mean_violent_rate, mean_property_rate,
+                    mean_officers_per_1000),
+                  is.na))
+
+cat("Counties retained:", nrow(spatial_df_full), "of", nrow(spatial_df), "\n")
+```
+
+```{r}
+spatial_weights_full <- build_spatial_weights(spatial_df_full)
+```
+
+### 9. OLS with controls
+
+```{r}
+ols_model_full <- lm(
+  full_formula,
+  data = spatial_df_full |> st_drop_geometry()
+)
+
+summary(ols_model_full)
+```
+
+```{r}
+car::vif(ols_model_full)
+```
+
+### Lagrange Multiplier Tests
+
+```{r}
+lm_tests_full <- lm.LMtests(
+  ols_model_full,
+  spatial_weights_full,
+  test = "all",
+  zero.policy = TRUE
+)
+
+summary(lm_tests_full)
+```
+
+### 10. SARAR with controls, no threshold
+
+```{r}
+sarar_model_full <- sacsarlm(
+  full_formula,
+  data    = spatial_df_full |> st_drop_geometry(),
+  listw   = spatial_weights_full,
+  zero.policy = TRUE
+)
+
+summary(sarar_model_full)
+```
+
+```{r}
+moran.test(residuals(sarar_model_full), spatial_weights_full, zero.policy = TRUE)
+```
+
+### Moran I’s
+
+```{r}
+moran.test(residuals(sarar_model_full), spatial_weights_full, zero.policy = TRUE)
+```
+
+### 10b. Re-fit SARAR on new sample, no controls, no threshold
+
+```{r}
+sarar_model_old_on_new_sample <- sacsarlm(
+  log1p(weighted_index_per100k) ~ p_black + p_hisp + p_foreign + med_income +
+    gini + med_home_val + p_renter + log_pop_den,
+  data    = spatial_df_full |> st_drop_geometry(),
+  listw   = spatial_weights_full,
+  zero.policy = TRUE
+)
+summary(sarar_model_old_on_new_sample)
+```
+
+```{r}
+# Correlation between predictors
+spatial_df_full |> st_drop_geometry() |>
+  select(p_black, med_home_val, mean_property_rate, mean_violent_rate, mean_officers_per_1000) |>
+  cor(use = "complete.obs")
+```
+
+### 11. Final Model, with 2500 Threshold
+
+```{r}
+spatial_df_full_2500 <- spatial_df |>
+  filter(total_pop >= 2500) |>
+  left_join(crime_county_avg,    by = "GEOID") |>
+  left_join(officers_county_avg, by = "GEOID") |>
+  filter(!if_any(c(p_black, p_hisp, p_foreign, med_income, gini, log_pop_den,
+                    med_home_val, p_renter, mean_violent_rate, mean_property_rate,
+                    mean_officers_per_1000), is.na))
+
+spatial_weights_full_2500 <- build_spatial_weights(spatial_df_full_2500)
+```
+
+```{r}
+lm_tests_2500 <- lm.LMtests(
+  lm(full_formula,
+     data = spatial_df_full_2500 |> st_drop_geometry()),
+  spatial_weights_full_2500, test = "all", zero.policy = TRUE
+)
+summary(lm_tests_2500)
+```
+
+```{r}
+sarar_model_final <- sacsarlm(
+  full_formula,
+  data    = spatial_df_full_2500 |> st_drop_geometry(),
+  listw   = spatial_weights_full_2500,
+  zero.policy = TRUE
+)
+summary(sarar_model_final)
+```
+
+```{r}
+moran.test(residuals(sarar_model_final), spatial_weights_full_2500, zero.policy = TRUE)
+```
+
+#### Spatial Effects
+
+```{r}
+sarar_impacts <- impacts(sarar_model_final, listw = spatial_weights_full_2500,
+                          zero.policy = TRUE, R = 200)   # R = number of simulation draws for SEs
+
+summary(sarar_impacts, zstats = TRUE)
+```
+
+```{r}
+sarar_impacts_summary <- summary(sarar_impacts, zstats = TRUE)
+print(sarar_impacts_summary)
+```

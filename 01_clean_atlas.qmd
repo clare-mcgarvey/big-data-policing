@@ -1,0 +1,419 @@
+---
+title: "Clean Atlas of Surveillance Data"
+format: html
+---
+
+## Atlas of Surveillance
+
+```{r aos-data}
+atlas_full <- read_csv(file = "data/Atlas of Surveillance-20260211.csv")
+```
+
+### Selecting Relevant Variables
+
+```{r aos-variables}
+atlas <- atlas_full |> 
+  select(c(`NEWAOSNUMBER (ORI9)`, City, County, State, Agency, `Type of LEA`, 
+            Summary, `Type of Juris`, Technology, Vendor, `Link 1 Date`, `Link 1`,
+            `Link 2 Date`, `Link 2`, `Link 3 Date`, `Link 3`)) |> 
+  rename(
+    state_abb   = State,
+    agency      = Agency,
+    county      = County,
+    city        = City,
+    lea_type    = `Type of LEA`,
+    summary     = Summary,
+    juris_type  = `Type of Juris`,
+    technology  = Technology,
+    vendor      = Vendor
+  ) |>
+  # Standardising text
+  mutate(
+    across(c(state_abb, county, city, agency, lea_type, juris_type, 
+             technology, vendor, `Link 1 Date`, `Link 2 Date`, `Link 3 Date`), 
+           str_trim),
+    across(c(county, city, agency, lea_type, juris_type, technology, 
+             vendor), str_to_title),
+    # Parse acquisition date (proxy = date of first published article)
+    date_1 = parse_date_time(`Link 1 Date`, orders = c("mdy", "my", "dmy", "Y")),
+    date_2 = parse_date_time(`Link 2 Date`, orders = c("mdy", "my", "dmy", "Y")),
+    date_3 = parse_date_time(`Link 3 Date`, orders = c("mdy", "my", "dmy", "Y")),
+    date   = as.Date(pmin(date_1, date_2, date_3, na.rm = TRUE)),
+    year   = year(date)
+  ) |>
+  select(-date_1, -date_2, -date_3)
+```
+
+### Cleaning
+
+#### Dates
+
+The date of the earliest published article is used as a proxy for the date of acquisition. Dates that were not successfully parsed or were implausible were checked and corrected manually. There are 874 entries with no date data for any of the links provided. These records remained in the dataset as the analysis was not temporal. 
+
+```{r unparsed-dates}
+# Which dates did not parse
+atlas_full |>
+  mutate(across(c(`Link 1 Date`, `Link 2 Date`, `Link 3 Date`), str_trim)) |>
+  mutate(
+    date_1 = parse_date_time(`Link 1 Date`, orders = c("mdy", "my", "dmy", "Y")),
+    date_2 = parse_date_time(`Link 2 Date`, orders = c("mdy", "my", "dmy", "Y")),
+    date_3 = parse_date_time(`Link 3 Date`, orders = c("mdy", "my", "dmy", "Y"))
+  ) |>
+  pivot_longer(
+    cols      = c(`Link 1 Date`, `Link 2 Date`, `Link 3 Date`),
+    names_to  = "link",
+    values_to = "raw_date"
+  ) |>
+  mutate(parsed = parse_date_time(raw_date, orders = c("mdy", "my", "dmy", "Y"))) |>
+  filter(!is.na(raw_date) & raw_date != "" & is.na(parsed)) |>
+  count(raw_date, sort = TRUE)
+```
+
+```{r date-correction}
+date_corrections <- read_csv("correction-files/date_corrections.csv") |>
+  select(`NEWAOSNUMBER (ORI9)`, corrected_earliest_date) |>
+  filter(!is.na(corrected_earliest_date)) |>
+  mutate(corrected_earliest_date = dmy(corrected_earliest_date))
+
+read_csv("correction-files/date_corrections.csv") |>
+  select(`NEWAOSNUMBER (ORI9)`, `Link 1 Date`, `Link 2 Date`, `Link 3 Date`, corrected_earliest_date) |>
+  filter(!is.na(corrected_earliest_date)) |>
+  mutate(corrected_earliest_date_parsed = dmy(corrected_earliest_date)) |>
+  print(n = Inf)
+```
+
+```{r year-distribution}
+atlas |>
+  filter(!is.na(year)) |>
+  summarise(
+    min_year = min(year), max_year = max(year),
+    mean_year = mean(year), median_year = median(year), sd_year = sd(year)
+  )
+```
+
+```{r implausible-years}
+# Check specifically for implausible years even after corrections
+atlas |>
+  filter(!is.na(year), (year < 1990 | year > 2025)) |>
+  select(`NEWAOSNUMBER (ORI9)`, county, state_abb, year, date, `Link 1 Date`, `Link 2 Date`, `Link 3 Date`)
+```
+
+```{r implausible-year-correction}
+implausible_corrections <- read_csv("correction-files/implausible_dates_review_corrected.csv") |>
+  select(`NEWAOSNUMBER (ORI9)`, corrected_date) |>
+  filter(!is.na(corrected_date)) |>
+  mutate(corrected_date = dmy(corrected_date)) 
+
+atlas <- atlas |>
+  left_join(implausible_corrections, by = "NEWAOSNUMBER (ORI9)") |>
+  mutate(
+    # Override, don't just take earliest — these are known-wrong values, not "possibly early" ones
+    date = if_else(!is.na(corrected_date), corrected_date, date)
+  ) |>
+  select(-corrected_date) |>
+  mutate(year = year(date))
+
+atlas |> filter(!is.na(year), year < 1990 | year > 2025) |> nrow()
+```
+
+```{r dist-post-year-corrections}
+atlas |>
+  filter(!is.na(year)) |>
+  summarise(min_year = min(year), max_year = max(year), mean_year = mean(year),
+            median_year = median(year), sd_year = sd(year))
+```
+
+```{r date-fix-df}
+atlas <- atlas |>
+  left_join(date_corrections, by = "NEWAOSNUMBER (ORI9)") |>
+  mutate(
+    date = as.Date(pmin(date, corrected_earliest_date, na.rm = TRUE))
+  ) |>
+  select(-corrected_earliest_date) |>
+  mutate(year = year(date))   # recompute year now that some dates were filled in
+
+atlas |>
+  filter(is.na(date)) |>
+  select(`NEWAOSNUMBER (ORI9)`, state_abb, county, city, summary,
+         `Link 1 Date`, `Link 2 Date`, `Link 3 Date`)
+```
+
+#### States
+
+```{r observations-by-state}
+atlas |> count(state_abb, sort = TRUE) |> print(n = Inf)
+```
+
+```{r cleaning-state-abbreviations}
+# Matching Abbreviations
+state_lookup <- tibble(
+  state_abb  = state.abb,
+  state      = state.name
+) |>
+  add_row(state_abb = "DC", state = "District of Columbia") |>
+  add_row(state_abb = "PR", state = "Puerto Rico") |>
+  add_row(state_abb = "GU", state = "Guam") |>
+  add_row(state_abb = "VI", state = "Virgin Islands")
+
+atlas <- atlas |>
+  mutate(state = state_lookup$state[match(state_abb, state_lookup$state_abb)]) |>
+  mutate(state = str_to_title(state))
+
+# Check any that didn't match
+atlas |> filter(is.na(state)) |> count(state_abb)
+```
+
+```{r unmatched-abbreviations}
+atlas |> 
+  filter(is.na(state)) |> 
+  select(c(city, county, state_abb))
+```
+
+```{r cleaning-abbreviations}
+# Fixing abbreviations
+atlas <- atlas |>
+  mutate(state_abb = case_when(
+    state_abb == "NB"         ~ "NE",
+    state_abb == "PS"         ~ "MO",
+    state_abb == "California" ~ "CA",
+    state_abb == "Texas"      ~ "TX",
+    TRUE ~ state_abb
+  ))
+
+# Overwrite state with the correct full name from state_lookup
+atlas <- atlas |>
+  mutate(state = state_lookup$state[match(state_abb, state_lookup$state_abb)])
+
+# Check
+atlas |> filter(is.na(state)) |> count(state_abb)
+```
+
+#### Missing
+
+```{r skim-aos}
+skim(atlas)
+```
+
+```{r missing-by-column}
+atlas |>
+  summarise(across(everything(), ~ mean(is.na(.)))) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "pct_missing") |>
+  arrange(desc(pct_missing)) |>
+  mutate(pct_missing = scales::percent(pct_missing, accuracy = 0.1))
+```
+
+##### Missing Counties
+
+Unmatched counties were exported into the 'unmatched_counties.csv' and manually corrected using an internet search to identify the correct entry. The corrections were input into the 'county_correction.csv' and joined back into a clean dataset. Singular entries that detailed multiple counties were split into separate entries for each county as this study operationalises the presence of surveillance technology in each county, not police jurisdiction. 
+
+When an observation contained a value for the city but not county, the county that contains the centre point of that city was input. 
+
+```{r missing-counties}
+atlas |>
+  filter(is.na(county) | str_trim(county) == "") |>
+  select(state_abb, county, city, agency, technology)
+```
+
+```{r number-missing-per-state}
+atlas |>
+  filter(is.na(county) | str_trim(county) == "") |>
+  count(state_abb, sort = TRUE)
+```
+
+```{r missing-county-quantity}
+# Observations with a missing county but documented city
+missing_county <- atlas |>
+  filter(is.na(county) | str_trim(county) == "") |>
+  filter(!is.na(city) & str_trim(city) != "")
+
+cat("Rows to fix:", nrow(missing_county), "\n")
+
+cities_to_geocode <- missing_county |>
+  distinct(city, state)
+
+cat("Unique city+state pairs to geocode:", nrow(cities_to_geocode), "\n")
+```
+
+```{r geocode-city-and-county}
+# Identifying the city centre point and corresponding county
+
+# Geocode
+cities_geocoded <- cities_to_geocode |>
+  mutate(address = paste(city, state, "USA", sep = ", ")) |>
+  geocode(
+    address = address,
+    method  = "arcgis",
+    lat     = lat,
+    long    = lon
+  )
+
+# Spatial join to get county name
+cities_sf <- cities_geocoded |>
+  filter(!is.na(lat)) |>
+  st_as_sf(coords = c("lon", "lat"), crs = 4326)
+
+counties_sf <- counties(cb = TRUE, year = 2024) |>
+  select(NAME) |>
+  st_transform(4326)
+
+cities_with_county <- cities_sf |>
+  st_join(counties_sf, join = st_within) |>
+  st_drop_geometry() |>
+  select(city, state, county_filled = NAME)
+
+# Patch back to atlas
+atlas <- atlas |>
+  left_join(cities_with_county, by = c("city", "state")) |>
+  mutate(
+    county = case_when(
+      (is.na(county) | str_trim(county) == "") & !is.na(county_filled) ~ str_to_title(county_filled),
+      TRUE ~ county
+    )
+  ) |>
+  select(-county_filled)
+```
+
+```{r still-missing}
+# Still missing
+atlas |>
+  filter(is.na(county) | str_trim(county) == "") |>
+  filter(!is.na(city) & str_trim(city) != "")
+```
+
+## Data Cleaning: Atlas of Surveillance
+
+```{r aos-county-corrections}
+# Standardising capitalisation
+atlas_clean <- atlas |>
+  relocate(state, .before = state_abb) |> 
+  mutate(
+    state = str_to_title(state),
+    # Fixing a singular mis-entered county 
+    county = case_when(
+      state == "Virginia" & county == "Manassas" & agency == "Manassas Park City Police Department" ~ "Manassas Park City",
+      TRUE ~ county
+    )
+  )
+
+# Corrected csv file
+corrections <- read.csv("correction-files/county_corrections.csv") |>
+  mutate(across(everything(), str_trim)) |>         # remove any stray whitespace
+  mutate(across(everything(), ~ na_if(., ""))) |>   # convert empty strings to NA
+  filter(!is.na(correct_county) | !is.na(correct_state))   # only rows with a fix
+
+# Cleaned dataset
+atlas_clean <- atlas_clean |>
+  left_join(corrections |> select(state, county, correct_county, correct_state),
+            by = c("state", "county"),
+            relationship = "many-to-many") |>
+  mutate(
+    county = coalesce(correct_county, county),
+    state  = coalesce(correct_state, state)
+  ) |>
+  select(-correct_county, -correct_state)
+
+n_before_exclusion <- nrow(atlas_clean) 
+```
+
+## State and Federal Agencies Check
+
+```{r lea-check}
+atlas_clean |>
+  count(lea_type, sort = TRUE) |>
+  mutate(pct = scales::percent(n / sum(n), accuracy = 0.1))
+```
+
+```{r lea-types}
+atlas_clean |> distinct(lea_type) |> arrange(lea_type)
+```
+
+```{r da-check}
+# Checking which geographical level the DA/ prosecutor operates at
+atlas_clean |>
+  mutate(
+    agency_scope = case_when(
+      str_detect(lea_type, regex("state", ignore_case = TRUE)) ~ "State",
+      str_detect(agency, regex("district attorney|prosecutor", ignore_case = TRUE)) ~ "DA/Prosecutor",
+      str_detect(lea_type, regex("county|sheriff", ignore_case = TRUE)) ~ "County/Sheriff",
+      TRUE ~ "Other"
+    )
+  ) |>
+  filter(agency_scope %in% c("State", "DA/Prosecutor")) |>
+  select(agency_scope, agency, state, county, technology) |>
+  arrange(agency_scope, state, county) |>
+  print(n = Inf)
+```
+
+```{r agency-scope}
+atlas_clean |>
+  mutate(
+    agency_scope = case_when(
+      str_detect(lea_type, regex("state", ignore_case = TRUE)) ~ "State",
+      str_detect(agency, regex("district attorney|prosecutor", ignore_case = TRUE)) ~ "DA/Prosecutor",
+      TRUE ~ "Other"
+    )
+  ) |>
+  filter(agency_scope %in% c("State", "DA/Prosecutor")) |>
+  count(state, county, agency_scope, sort = TRUE)
+
+atlas_clean |>
+  filter(lea_type %in% c("District Attorney", "Prosecutor's Office", "Prosecutor")) |>
+  distinct(agency, county, state) |>
+  arrange(state, county) |>
+  print(n = 40)
+
+atlas_clean |>
+  filter(lea_type %in% c("Dmv", "Corrections", "Court", "Probation/Parole",
+                          "Public Safety", "Emergency Services",
+                          "Environmental Services Enforcement",
+                          "Alcoholic Beverage Control", "Highway Authority", "Task Force")) |>
+  distinct(lea_type, agency, county, state) |>
+  arrange(lea_type, state, county) |>
+  print(n = Inf)
+```
+
+```{r excluded-lea}
+problem_types <- c("State Police/Highway Patrol", "State Police", "State Patrol",
+                    "State-Local Partnership", "State Agency", "Attorney General",
+                    "Fusion Center", "Customs And Border Protection", "Fish And Game",
+                    "Fish And Wildlife", "Natural Resources", "Conservation",
+                    "Homeland Security", "Federal Agency", "Drug Enforcement",
+                    "Forest Service", "Treasury/Finance", "Taxation", "Multi-Jurisdiction",
+                    "Dmv", "Court", "Task Force", "Highway Authority")
+
+# Mixed categories need agency-name-level exclusion, not lea_type-level
+state_agency_names <- c(
+  "Alabama Department Of Corrections", "Arizona Department Of Corrections",
+  "Colorado Department Of Corrections", "Delaware Department Of Correction",
+  "Indiana Department Of Correction", "New Hampshire Department Of Corrections",
+  "New Jersey Department Of Corrections",
+  "New York Department Of Corrections And Community Supervision",
+  "South Carolina Department Of Corrections",
+  "Puerto Rico Department Of Corrections And Rehabilitation",
+  "New Jersey State Parole Board", "Georgia Department Of Juvenile Justice",
+  "South Carolina Department Of Probation, Parole And Pardon Services",
+  "Texas Board Of Criminal Justice",
+  "Minnesota Department Of Public Safety - Alcohol And Gambling\nEnforcement"
+)
+
+atlas_clean <- atlas_clean |>
+  filter(!lea_type %in% problem_types) |>
+  filter(!agency %in% state_agency_names)
+
+cat("Records after exclusion:", nrow(atlas_clean), "\n")
+```
+
+```{r lea-removal-table}
+atlas_clean <- atlas_clean |>
+  filter(!lea_type %in% problem_types) |>
+  filter(!agency %in% state_agency_names)
+
+n_after_exclusion <- nrow(atlas_clean)
+
+tibble(
+  n_before_exclusion = n_before_exclusion,
+  n_after_exclusion  = n_after_exclusion,
+  n_removed          = n_before_exclusion - n_after_exclusion,
+  pct_removed        = scales::percent((n_before_exclusion - n_after_exclusion) / n_before_exclusion, accuracy = 0.1)
+)
+```

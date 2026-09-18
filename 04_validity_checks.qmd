@@ -1,0 +1,373 @@
+---
+title: "Validity Checks: Surveillance Index"
+format: html
+---
+
+## Validity Checks: Surveillance Index
+
+### Population Normalisation
+
+```{r}
+# Raw index
+cat("Raw index correlation", cor(analysis_df$raw_weighted_index, analysis_df$total_pop, use = "complete.obs"), "\n")
+```
+
+```{r}
+# Per-100k index
+cat("Per 100k index correlation", cor(analysis_df$weighted_index_per100k, analysis_df$total_pop, use = "complete.obs"), "\n")
+```
+
+```{r}
+cat("Logged per 100k index correlation", cor(analysis_df$weighted_index_per100k, log(analysis_df$total_pop), use = "complete.obs"), "\n")
+```
+
+```{r}
+# Graph
+population_check_plot <- analysis_df |>
+  st_drop_geometry() |>
+  ggplot(aes(x = total_pop, y = weighted_index_per100k)) +
+  geom_point(alpha = 0.3) +
+  scale_x_log10() +
+  geom_smooth(method = "loess") +
+  labs(
+    title = "Check: does per-100k index still depend on population?",
+    x = "Total population (log scale)",
+    y = "Surveillance index per 100k"
+  ) +
+  theme_thesis(base_size = figure_base_size)
+
+save_figure(population_check_plot, "population_dependence_check.png", width = 9, height = 6)
+```
+
+```{r}
+population_check_plot
+```
+
+```{r}
+# Table of top weighted indices
+analysis_df |>
+  st_drop_geometry() |>
+  filter(!is.na(weighted_index_per100k), weighted_index_per100k > 0) |>
+  mutate(implied_raw = round(weighted_index_per100k * total_pop / 100000)) |>
+  arrange(desc(weighted_index_per100k)) |>
+  select(NAME, total_pop, implied_raw, raw_weighted_index, weighted_index_per100k) |>
+  slice_head(n = 30)
+```
+
+```{r}
+# Plot of top scoring counties 
+top20 <- analysis_df |>
+  filter(!is.na(weighted_index_per100k)) |>
+  arrange(desc(weighted_index_per100k)) |>
+  slice_head(n = 30)
+
+county_base <- analysis_df |>
+  filter(!str_detect(GEOID, "^02|^15|^72"))   # drop AK, HI, PR for a cleaner continental view
+
+ggplot() +
+  geom_sf(data = county_base, fill = "grey92", colour = "white", linewidth = 0.05) +
+  geom_sf(data = top20 |> filter(!str_detect(GEOID, "^02|^15|^72")),
+          fill = "#d73027", colour = "white", linewidth = 0.2) +
+  labs(
+    title    = "Top 30 counties by surveillance index per 100,000 population",
+    caption  = "Source: Atlas of Surveillance · ACS 2024 5-year estimates"
+  ) +
+  theme_void() +
+  theme(
+    plot.title    = element_text(face = "bold", hjust = 0.5, size = 13),
+    plot.subtitle = element_text(hjust = 0.5, size = 9, colour = "grey30"),
+    plot.caption  = element_text(hjust = 0.5, size = 7, colour = "grey50")
+  )
+```
+
+#### Population Threshold
+
+```{r}
+analysis_df_2500 <- analysis_df |> filter(total_pop >= 2500)
+
+# Raw index
+cat("Raw index correlation (2500+):", cor(analysis_df_2500$raw_weighted_index, analysis_df_2500$total_pop, use = "complete.obs"), "\n")
+```
+
+```{r}
+# Per-100k index
+cat("Per 100k index correlation (2500+):", cor(analysis_df_2500$weighted_index_per100k, analysis_df_2500$total_pop, use = "complete.obs"), "\n")
+```
+
+```{r}
+cat("Logged per 100k index correlation (2500+):", cor(analysis_df_2500$weighted_index_per100k, log(analysis_df_2500$total_pop), use = "complete.obs"), "\n")
+```
+
+```{r}
+# Graph
+analysis_df_2500 |>
+  st_drop_geometry() |>
+  ggplot(aes(x = total_pop, y = weighted_index_per100k)) +
+  geom_point(alpha = 0.3) +
+  scale_x_log10() +
+  geom_smooth(method = "loess") +
+  labs(title = "Check: does per-100k index still depend on population? (2,500+ threshold)",
+       x = "Total population (log scale)", y = "Surveillance index per 100k")
+```
+
+```{r}
+# Table of top weighted indices
+analysis_df_2500 |>
+  st_drop_geometry() |>
+  filter(!is.na(weighted_index_per100k), weighted_index_per100k > 0) |>
+  mutate(implied_raw = round(weighted_index_per100k * total_pop / 100000)) |>
+  arrange(desc(weighted_index_per100k)) |>
+  select(NAME, total_pop, implied_raw, raw_weighted_index, weighted_index_per100k) |>
+  slice_head(n = 30)
+```
+
+```{r}
+# Plot of top scoring counties
+top30_2500 <- analysis_df_2500 |>
+  filter(!is.na(weighted_index_per100k)) |>
+  arrange(desc(weighted_index_per100k)) |>
+  slice_head(n = 30)
+
+county_base_2500 <- analysis_df_2500 |>
+  filter(!str_detect(GEOID, "^02|^15|^72"))
+
+ggplot() +
+  geom_sf(data = county_base_2500, fill = "grey92", colour = "white", linewidth = 0.05) +
+  geom_sf(data = top30_2500 |> filter(!str_detect(GEOID, "^02|^15|^72")),
+          fill = "#d73027", colour = "white", linewidth = 0.2) +
+  labs(
+    title    = "Top 30 counties by surveillance index per 100,000 population (2,500+ threshold)",
+    caption  = "Source: Atlas of Surveillance · ACS 2024 5-year estimates"
+  ) +
+  theme_void() +
+  theme(
+    plot.title    = element_text(face = "bold", hjust = 0.5, size = 13),
+    plot.subtitle = element_text(hjust = 0.5, size = 9, colour = "grey30"),
+    plot.caption  = element_text(hjust = 0.5, size = 7, colour = "grey50")
+  )
+```
+
+```{r}
+analysis_df_5000 <- analysis_df |> filter(total_pop >= 5000)
+
+# Raw index
+cat("Raw index correlation (5000+):", cor(analysis_df_5000$raw_weighted_index, analysis_df_5000$total_pop, use = "complete.obs"), "\n")
+```
+
+```{r}
+# Per-100k index
+cat("Per 100k index correlation (5000+):", cor(analysis_df_5000$weighted_index_per100k, analysis_df_5000$total_pop, use = "complete.obs"), "\n")
+```
+
+```{r}
+cat("Logged per 100k index correlation (5000+):", cor(analysis_df_5000$weighted_index_per100k, log(analysis_df_5000$total_pop), use = "complete.obs"), "\n")
+```
+
+```{r}
+# Graph
+analysis_df_5000 |>
+  st_drop_geometry() |>
+  ggplot(aes(x = total_pop, y = weighted_index_per100k)) +
+  geom_point(alpha = 0.3) +
+  scale_x_log10() +
+  geom_smooth(method = "loess") +
+  labs(title = "Check: does per-100k index still depend on population? (5,000+ threshold)",
+       x = "Total population (log scale)", y = "Surveillance index per 100k")
+```
+
+```{r}
+# Table of top weighted indices
+analysis_df_5000 |>
+  st_drop_geometry() |>
+  filter(!is.na(weighted_index_per100k), weighted_index_per100k > 0) |>
+  mutate(implied_raw = round(weighted_index_per100k * total_pop / 100000)) |>
+  arrange(desc(weighted_index_per100k)) |>
+  select(NAME, total_pop, implied_raw, raw_weighted_index, weighted_index_per100k) |>
+  slice_head(n = 30)
+```
+
+```{r}
+# Plot of top scoring counties
+top30_5000 <- analysis_df_5000 |>
+  filter(!is.na(weighted_index_per100k)) |>
+  arrange(desc(weighted_index_per100k)) |>
+  slice_head(n = 30)
+
+county_base_5000 <- analysis_df_5000 |>
+  filter(!str_detect(GEOID, "^02|^15|^72"))
+
+ggplot() +
+  geom_sf(data = county_base_5000, fill = "grey92", colour = "white", linewidth = 0.05) +
+  geom_sf(data = top30_5000 |> filter(!str_detect(GEOID, "^02|^15|^72")),
+          fill = "#d73027", colour = "white", linewidth = 0.2) +
+  labs(
+    title    = "Top 30 counties by surveillance index per 100,000 population (5,000+ threshold)",
+    caption  = "Source: Atlas of Surveillance · ACS 2024 5-year estimates"
+  ) +
+  theme_void() +
+  theme(
+    plot.title    = element_text(face = "bold", hjust = 0.5, size = 13),
+    plot.subtitle = element_text(hjust = 0.5, size = 9, colour = "grey30"),
+    plot.caption  = element_text(hjust = 0.5, size = 7, colour = "grey50")
+  )
+```
+
+```{r}
+validity_comparison <- tibble(
+  metric = c("Raw index vs. population (r)",
+             "Per-100k index vs. population (r)",
+             "Per-100k index vs. log(population) (r)"),
+  full_sample = c(
+    cor(analysis_df$raw_weighted_index, analysis_df$total_pop, use = "complete.obs"),
+    cor(analysis_df$weighted_index_per100k, analysis_df$total_pop, use = "complete.obs"),
+    cor(analysis_df$weighted_index_per100k, log(analysis_df$total_pop), use = "complete.obs")
+  ),
+  threshold_2500 = c(
+    cor(analysis_df_2500$raw_weighted_index, analysis_df_2500$total_pop, use = "complete.obs"),
+    cor(analysis_df_2500$weighted_index_per100k, analysis_df_2500$total_pop, use = "complete.obs"),
+    cor(analysis_df_2500$weighted_index_per100k, log(analysis_df_2500$total_pop), use = "complete.obs")
+  ),
+  threshold_5000 = c(
+    cor(analysis_df_5000$raw_weighted_index, analysis_df_5000$total_pop, use = "complete.obs"),
+    cor(analysis_df_5000$weighted_index_per100k, analysis_df_5000$total_pop, use = "complete.obs"),
+    cor(analysis_df_5000$weighted_index_per100k, log(analysis_df_5000$total_pop), use = "complete.obs")
+  )
+) |>
+  mutate(across(where(is.numeric), ~round(., 4)))
+
+validity_comparison
+```
+
+```{r}
+n_comparison <- tibble(
+  sample = c("Full sample", "2,500+ threshold", "5,000+ threshold"),
+  n_counties = c(nrow(analysis_df), nrow(analysis_df_2500), nrow(analysis_df_5000))
+)
+n_comparison
+```
+
+```{r}
+validity_comparison_final <- bind_rows(
+  validity_comparison,
+  tibble(
+    metric = "N (counties)",
+    full_sample = nrow(analysis_df),
+    threshold_2500 = nrow(analysis_df_2500),
+    threshold_5000 = nrow(analysis_df_5000)
+  )
+)
+
+validity_comparison_final
+```
+
+```{r}
+stargazer(
+  validity_comparison_final,
+  type = "html",
+  title = "Population Normalisation Validity Check",
+  summary = FALSE,
+  rownames = FALSE,
+  digits = 4,
+  out = "figures/validity_comparison.html"
+)
+```
+
+### Weight Sensitivity
+
+```{r}
+# Alternative 1: equal weighting for every technology (removes the weighting scheme)
+tech_weights_equal <- tech_weights |> mutate(weight = 1)
+
+# Alternative 2: perturb original weights randomly by ±0.25
+set.seed(11)
+tech_weights_perturbed_small <- tech_weights |>
+  mutate(weight = pmax(1, weight + sample(c(-0.25, 0, 0.25), n(), replace = TRUE)))
+
+# Alternative 3: perturb original weights randomly by ±0.5
+set.seed(11)
+tech_weights_perturbed_large <- tech_weights |>
+  mutate(weight = pmax(1, weight + sample(c(-0.5, 0, 0.5), n(), replace = TRUE)))
+
+# Recompute index under each alternative weighting scheme
+recompute_index <- function(weights_table) {
+  atlas_clean |>
+    mutate(
+      county_clean = str_to_title(
+        str_remove(county,
+          regex(" County$| Parish$| Borough$| City And Borough$| Census Area$| Municipality$| Municipio$| Municipality County$| Island$",
+                ignore_case = TRUE))
+      )
+    ) |>
+    left_join(fips_xwalk, by = c("state" = "state_name", "county_clean" = "county_name")) |>
+    left_join(weights_table, by = "technology") |>
+    mutate(weight = replace_na(weight, 1)) |>
+    filter(!is.na(GEOID)) |>
+    group_by(GEOID) |>
+    summarise(alt_raw_index = sum(weight, na.rm = TRUE), .groups = "drop")
+}
+
+# Compare rankings: Spearman rank correlation between original and alternative indices
+comparison <- analysis_df |>
+  st_drop_geometry() |>
+  select(GEOID, total_pop, weighted_index_per100k) |>
+  left_join(recompute_index(tech_weights_equal), by = "GEOID") |>
+  mutate(index_equal_per100k = replace_na(alt_raw_index, 0) / total_pop * 100000) |>
+  select(-alt_raw_index) |>
+  left_join(recompute_index(tech_weights_perturbed_small), by = "GEOID") |>
+  mutate(index_perturbed_small_per100k = replace_na(alt_raw_index, 0) / total_pop * 100000) |>
+  select(-alt_raw_index) |>
+  left_join(recompute_index(tech_weights_perturbed_large), by = "GEOID") |>
+  mutate(index_perturbed_large_per100k = replace_na(alt_raw_index, 0) / total_pop * 100000) |>
+  select(-alt_raw_index)
+
+cat("Spearman rank correlation between original and equal weights:",
+    cor(comparison$weighted_index_per100k, comparison$index_equal_per100k,
+        method = "spearman", use = "complete.obs"), "\n")
+```
+
+```{r}
+cat("Spearman rank correlation between original and perturbed weights (±0.25):",
+    cor(comparison$weighted_index_per100k, comparison$index_perturbed_small_per100k,
+        method = "spearman", use = "complete.obs"), "\n")
+```
+
+```{r}
+cat("Spearman rank correlation between original and perturbed weights (±0.5):",
+    cor(comparison$weighted_index_per100k, comparison$index_perturbed_large_per100k,
+        method = "spearman", use = "complete.obs"), "\n")
+```
+
+### Internal Consistency
+
+```{r}
+analysis_df |>
+  st_drop_geometry() |>
+  select(weighted_index_per100k, n_records, n_agencies, n_tech_types) |>
+  drop_na() |>
+  cor(method = "spearman")
+```
+
+### Coverage-Cofound Check
+
+```{r}
+check5_data <- analysis_df |>
+  st_drop_geometry() |>
+  mutate(state = str_extract(NAME, "(?<=, ).*$")) |>
+  group_by(state) |>
+  summarise(mean_index = mean(weighted_index_per100k, na.rm = TRUE), .groups = "drop") |>
+  left_join(state_coverage |> select(state, pct_coverage), by = "state")
+
+# Correlation
+cat("Spearman correlation", 
+    cor(check5_data$pct_coverage, check5_data$mean_index, 
+        method = "spearman", use = "complete.obs"), "\n")
+```
+
+```{r}
+# Plot
+ggplot(check5_data, aes(x = pct_coverage, y = mean_index)) +
+  geom_point() +
+  geom_smooth(method = "loess") +
+  labs(title = "Does mean county index track Atlas documentation coverage by state?",
+       x = "% of counties in state with any Atlas record", y = "Mean surveillance index")
+```

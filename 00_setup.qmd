@@ -1,0 +1,177 @@
+---
+title: "Setup"
+format: html
+---
+
+## Set up
+
+```{r libraries}
+knitr::opts_chunk$set(echo = TRUE)
+# library(data.table)
+library(tidyverse)
+library(tidycensus)
+library(dplyr)
+library(DataExplorer)
+library(corrplot)
+library(caret)
+library(mctest)
+library(car)
+library(Metrics)
+library(pROC)
+library(skimr)
+library(sf)
+library(GGally)
+library(tidygeocoder)
+library(tigris)
+library(Hmisc)
+library(spdep)
+library(readxl)
+library(broom)
+library(spatialreg)
+library(patchwork)
+library(texreg)
+library(purrr)
+library(stargazer)
+library(spatialreg)
+
+options(scipen = 999)
+options(tigris_use_cache = TRUE)
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE)
+```
+
+### Helper Functions
+
+```{r theme-helper}
+theme_thesis <- function(base_size = 10) {
+  theme_minimal(base_size = base_size) +
+    theme(
+      plot.title    = element_text(face = "bold", hjust = 0.5, size = base_size + 4),
+      plot.subtitle = element_text(hjust = 0.5, size = base_size - 1, colour = "grey40"),
+      plot.caption  = element_text(hjust = 0.5, size = base_size - 3, colour = "grey50"),
+      legend.title = element_text(size = base_size - 1),
+      legend.position = "right"
+    )
+}
+
+theme_thesis_map <- function(base_size = 10) {
+  theme_void(base_size = base_size) +
+    theme(
+      plot.title    = element_text(face = "bold", hjust = 0.5, size = base_size + 4),
+      plot.subtitle = element_text(hjust = 0.5, size = base_size - 1, colour = "grey40"),
+      plot.caption  = element_text(hjust = 0.5, size = base_size - 3, colour = "grey50"),
+      legend.title = element_text(size = base_size - 1),
+      legend.position = "right"
+    )
+}
+```
+
+```{r save-helper}
+save_figure <- function(plot, filename, width = 10, height = 7, dpi = 300) {
+  if (!dir.exists("figures")) dir.create("figures")
+  
+  ggsave(
+    filename = file.path("figures", filename),
+    plot     = plot,
+    width    = width,
+    height   = height,
+    dpi      = dpi,
+    bg       = "white"
+  )
+  
+  cat("Saved:", file.path("figures", filename), "\n")
+}
+```
+
+```{r predictor-set-helper}
+full_formula <- log1p(weighted_index_per100k) ~ p_black + p_hisp + p_foreign +
+  med_income + gini + med_home_val + p_renter + log_pop_den +
+  mean_violent_rate + mean_property_rate + mean_officers_per_1000
+```
+
+```{r model-helpers}
+# Spatial models
+extract_spatial_model <- function(model, label) {
+  s <- summary(model)
+  coefs <- as.data.frame(s$Coef)
+  coefs$term <- rownames(coefs)
+  n_obs <- length(residuals(model)) 
+
+  coefs |>
+    rename(estimate = Estimate, std_error = `Std. Error`, p_value = `Pr(>|z|)`) |>
+    mutate(
+      model       = label,
+      n           = n_obs,
+      significant = p_value < 0.05
+    ) |>
+    select(model, n, term, estimate, std_error, p_value, significant)
+}
+
+# Linear models
+extract_model <- function(model, label) {
+  r2 <- broom::glance(model)$adj.r.squared 
+
+  broom::tidy(model) |>
+    filter(term != "(Intercept)") |>
+    mutate(
+      model       = label,
+      r_squared   = r2,
+      significant = p.value < 0.05
+    ) |>
+    select(model, term, estimate, p.value, significant, r_squared)
+}
+
+# Residuals vs Fitted, Scale-Location, and Cook's D plots for an lm() object
+diagnose_lm <- function(model, label = deparse(substitute(model))) {
+  df <- broom::augment(model)
+
+  p1 <- ggplot(df, aes(.fitted, .resid)) +
+    geom_point(alpha = 0.4, size = 0.8) +
+    labs(title = paste("Residuals vs Fitted:", label))
+
+  p2 <- ggplot(df, aes(.fitted, sqrt(abs(.std.resid)))) +
+    geom_point(alpha = 0.4, size = 0.8) +
+    geom_smooth(method = "loess", colour = "black", se = FALSE, linewidth = 0.6) +
+    labs(title = paste("Scale-Location:", label), y = expression(sqrt("|Standardized residuals|")))
+
+  cooks_d <- cooks.distance(model)
+  p3 <- tibble(cooks_d = cooks_d) |>
+    arrange(desc(cooks_d)) |>
+    mutate(rank = row_number()) |>
+    slice_head(n = 50) |>
+    ggplot(aes(rank, cooks_d)) +
+    geom_point() +
+    geom_hline(yintercept = 4 / length(cooks_d), colour = "red", linetype = "dashed") +
+    labs(title = paste("Top 50 Cook's Distance:", label), subtitle = "Red line = 4/n threshold")
+
+  print(p1); print(p2); print(p3)
+  cat(label, "- points exceeding 4/n Cook's D threshold:", sum(cooks_d > 4 / length(cooks_d)), "\n")
+
+  invisible(cooks_d)
+}
+```
+
+```{r knn-helper}
+# KNN spatial weights from a coordinate matrix
+knn_listw <- function(coords, k) {
+  nb2listw(knn2nb(knearneigh(coords, k = k)), style = "W", zero.policy = TRUE)
+}
+
+# Fit one spatial model at a given k and return its fit statistics. Used to
+# scan several k values when choosing a KNN neighbourhood size (07_robustness.qmd).
+scan_k <- function(k, coords, data, formula, fit_fun = sacsarlm) {
+  listw <- knn_listw(coords, k)
+  model <- fit_fun(formula, data = data, listw = listw, zero.policy = TRUE)
+  moran <- moran.test(residuals(model), listw, zero.policy = TRUE)
+  tibble(
+    k       = k,
+    AIC     = AIC(model),
+    rho     = model$rho,
+    lambda  = if (!is.null(model$lambda)) model$lambda else NA_real_,
+    moran_i = moran$estimate[["Moran I statistic"]],
+    moran_p = moran$p.value
+  )
+}
+```

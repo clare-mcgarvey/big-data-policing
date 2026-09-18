@@ -1,0 +1,761 @@
+---
+title: "Exploratory Analysis"
+format: html
+---
+
+## Exploratory Analysis
+
+### Atlas of Surveillance
+
+#### Technology Distribution
+
+```{r}
+# Count and share of each technology type
+tech_counts <- atlas |>
+  count(technology, sort = TRUE) |>
+  mutate(
+    pct   = n / sum(n),
+    technology = fct_reorder(technology, n)
+  )
+
+ggplot(tech_counts, aes(x = n, y = technology)) +
+  geom_col(fill = "#4C72B0") +
+  geom_text(aes(label = scales::percent(pct, accuracy = 0.1)),
+            hjust = -0.1, size = 3) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.12))) +
+  labs(
+    title    = "Atlas of Surveillance: technology frequency",
+    subtitle = paste0("n = ", scales::comma(nrow(atlas)), " records"),
+    x = "Count", y = NULL
+  ) +
+  theme_minimal()
+```
+
+#### Agency
+
+```{r}
+atlas |>
+  count(lea_type, sort = TRUE) |>
+  mutate(lea_type = fct_reorder(lea_type, n)) |>
+  ggplot(aes(x = n, y = lea_type)) +
+  geom_col(fill = "#696FC7") +
+  labs(title = "Records by law enforcement agency type",
+       x = "Count", y = NULL) +
+  theme_minimal()
+```
+
+#### –> How to delegate larger agencies like state police, district attorney, and prosecutor’s office into the county level?
+
+#### State-level Distribution
+
+```{r}
+state_coverage_plot <- atlas |>
+  count(state, state, sort = TRUE) |>
+  mutate(state = fct_reorder(state, n)) |>
+  ggplot(aes(x = n, y = state)) +
+  geom_col(fill = "#332288") +
+  labs(title = "States by number of surveillance records",
+       x = "Count", y = NULL) +
+  theme_thesis(base_size = figure_base_size - 6)
+
+save_figure(state_coverage_plot, "state_coverage_plot.png", width = 8, height = 7)
+```
+
+```{r}
+state_coverage_plot
+```
+
+#### Vendors
+
+```{r}
+# Top 15 vendors
+atlas |>
+  filter(!is.na(vendor)) |>
+  count(vendor, sort = TRUE) |>
+  slice_head(n = 15) |>
+  mutate(vendor = fct_reorder(vendor, n)) |>
+  ggplot(aes(x = n, y = vendor)) +
+  geom_col(fill = "#DD8452") +
+  labs(title = "Top 15 surveillance vendors",
+       x = "Records", y = NULL) +
+  theme_minimal()
+```
+
+```{r}
+# Vendors by technology type
+atlas |>
+  filter(!is.na(vendor)) |>
+  group_by(technology) |>
+  count(vendor, sort = TRUE) |>
+  slice_max(n, n = 3) |>       # top 3 vendors per tech
+  ungroup()
+```
+
+#### Temporal Trends
+
+```{r}
+# Adoptions per year, faceted by technology
+# Note: date = date of first published article, not confirmed acquisition date
+atlas |>
+  filter(!is.na(year), year >= 2000, year <= 2025) |>
+  count(year, technology) |>
+  ggplot(aes(x = year, y = n, colour = technology)) +
+  geom_line() +
+  geom_point(size = 1) +
+  facet_wrap(~ technology, scales = "free_y") +
+  labs(
+    title    = "Technology adoption over time",
+    subtitle = "Proxy: year of first published article about acquisition",
+    x = NULL, y = "New records", colour = NULL
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+```{r}
+# Aggregate annual trend
+atlas |>
+  filter(!is.na(year), year >= 2000, year <= 2025) |>
+  count(year) |>
+  ggplot(aes(x = year, y = n)) +
+  geom_col(fill = "#4C72B0") +
+  labs(title = "Total surveillance technology acquisitions by year",
+       subtitle = "All technology types combined",
+       x = NULL, y = "Records") +
+  theme_minimal()
+```
+
+#### Technology co-occurrence per county
+
+```{r}
+atlas |>
+  group_by(state, county) |>
+  summarise(
+    n_records  = n(),
+    n_tech_types = n_distinct(technology),
+    .groups = "drop"
+  ) |>
+  ggplot(aes(x = n_tech_types)) +
+  geom_histogram(binwidth = 1, fill = "#4C72B0", colour = "white") +
+  scale_x_continuous(breaks = scales::breaks_width(1)) +
+  labs(
+    title = "Distribution of distinct technology types per county",
+    x = "Number of distinct technologies", y = "Count of counties"
+  ) +
+  theme_minimal()
+```
+
+### ACS
+
+```{r}
+# spatial_df |>
+#   st_drop_geometry() |>
+#   filter(if_any(c(p_black, p_hisp, p_foreign, med_income, gini, log_pop_den), is.na))
+```
+
+```{r}
+# Basic checks
+glimpse(acs)
+```
+
+```{r}
+summary(acs)
+```
+
+```{r}
+# County size
+acs |> slice_max(total_pop, n = 10)
+```
+
+```{r}
+# Missing values
+acs |>
+  st_drop_geometry() |>
+  summarise(across(everything(), ~ sum(is.na(.)))) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "n_missing") |>
+  filter(n_missing > 0)
+```
+
+#### Distributions
+
+```{r}
+numeric_vars <- acs |> 
+  st_drop_geometry() |>
+  select(where(is.numeric)) |>
+  names()
+
+acs |>
+  st_drop_geometry() |>
+  select(all_of(numeric_vars)) |>
+  pivot_longer(everything(), names_to = "variable", values_to = "value") |>
+  ggplot(aes(x = value)) +
+  geom_histogram(bins = 40, fill = "#696FC7", colour = "white", linewidth = 0.2) +
+  facet_wrap(~ variable, scales = "free") +
+  labs(title = "Distribution of key ACS variables", x = NULL, y = "Count") +
+  theme_minimal()
+```
+
+#### Predictor Correlation Matrix
+
+```{r}
+cor_data <- acs |>
+  st_drop_geometry() |>
+  select(all_of(numeric_vars)) |>
+  drop_na()
+
+# Plot 
+ggcorr(cor_data, 
+       method = c("everything", "pearson"), 
+       digits = 2,              # decimal places
+       label = TRUE, 
+       label_size = 3, 
+       label_round = 2,         # rounding to two places
+       hjust = 0.85,            # Adjusted for label alignment
+       size = 4,                # Overall size of the tiles
+       layout.exp = 1,          # Expands the plot area so names aren't cut off
+       low = "steelblue", 
+       median = "white", 
+       high = "tomato") +
+  labs(title = "Correlation Matrix: Race and Class Variables",
+       subtitle = "Pearson Correlation Coefficients")
+```
+
+#### Mapping
+
+```{r}
+plot_map <- function(data, var, title, palette = "viridis") {
+  ggplot(data) +
+    geom_sf(aes(fill = .data[[var]]), colour = NA) +
+    scale_fill_viridis_c(option = palette, na.value = "grey80") +
+    labs(title = title, fill = NULL) +
+    theme_void() +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+}
+
+acs_cont <- acs |>
+  filter(!str_detect(GEOID, "^02|^15|^72"))   # drop AK, HI, PR
+
+plot_map(acs_cont, "p_black",     "Proportion Black population")
+```
+
+```{r}
+plot_map(acs_cont, "p_hisp",      "Proportion Hispanic population")
+```
+
+```{r}
+plot_map(acs_cont, "med_income",  "Median household income", palette = "plasma")
+```
+
+```{r}
+plot_map(acs_cont, "poverty_rate","Poverty rate")
+```
+
+```{r}
+plot_map(acs_cont, "gini",        "Gini coefficient")
+```
+
+```{r}
+plot_map(acs_cont, "pop_den",     "Population density (per km²)", palette = "plasma")
+```
+
+#### Income vs Race
+
+```{r}
+acs |>
+  st_drop_geometry() |>
+  ggplot(aes(x = p_black, y = med_income)) +
+  geom_point(alpha = 0.3, size = 0.8) +
+  geom_smooth(method = "lm", colour = "firebrick") +
+  scale_x_continuous(labels = scales::percent) +
+  scale_y_continuous(labels = scales::dollar) +
+  labs(
+    title = "% Black residents vs. median household income by county",
+    x = "Proportion Black", y = "Median income"
+  ) +
+  theme_minimal()
+```
+
+### Correlations
+
+```{r}
+analysis_plot <- analysis_df |>
+  filter(weighted_index_per100k > 0) |>          # exclude zero-surveillance counties
+  mutate(log_index = log1p(weighted_index_per100k))  # log1p = log(x+1), handles zeros safely
+
+# Variables to examine against the surveillance index
+acs_predictors <- c(
+  "p_black", "p_hisp", "p_white", "p_foreign",
+  "med_income", "gini", "med_home_val",
+  "poverty_rate", "p_renter",
+  "p_edu_hs", "p_edu_ba",
+  "log_pop_den", "p_pt_to_work", "p_uninsured" 
+)
+
+# Readable labels for plot axes
+predictor_labels <- c(
+  p_black     = "Proportion Black",
+  p_hisp      = "Proportion Hispanic",
+  p_white     = "Proportion White",
+  p_foreign   = "Proportion Foreign Born",
+  med_income  = "Median Household Income",
+  gini        = "Gini Coefficient",
+  med_home_val = "Median Home Value",
+  poverty_rate = "Poverty Rate",
+  p_renter    = "Proportion Renter-Occupied",
+  p_edu_hs    = "Proportion High School Educated",
+  p_edu_ba    = "Proportion Bachelor's Educated",
+  pop_den     = "Population Density (per km²)",
+  p_pt_to_work = "Proportion Public Transport Commuters",
+  p_uninsured = "Proportion Without Health Insurance"
+)
+```
+
+#### Distribution of Surveillance Index
+
+```{r}
+# Raw
+p_dist_raw <- analysis_plot |>
+  ggplot(aes(x = weighted_index_per100k)) +
+  geom_histogram(bins = 50, fill = "#4C72B0", colour = "white", linewidth = 0.2) +
+  labs(title = "Distribution of surveillance index (raw)",
+       x = "Weighted index per 100,000 population", y = "Count") +
+  theme_minimal()
+
+# Log-transformed
+p_dist_log <- analysis_plot |>
+  ggplot(aes(x = log_index)) +
+  geom_histogram(bins = 50, fill = "#696FC7", colour = "white", linewidth = 0.2) +
+  labs(title = "Distribution of surveillance index (log-transformed)",
+       x = "log(weighted index per 100k + 1)", y = "Count") +
+  theme_minimal()
+
+p_dist_raw
+```
+
+```{r}
+p_dist_log
+```
+
+#### Spearman Correlation
+
+```{r}
+# Data Preparation
+cor_vars <- c("weighted_index_per100k", acs_predictors)
+
+spearman_data <- analysis_df |>
+  st_drop_geometry() |>
+  filter(weighted_index_per100k > 0) |> # removing counties with no surveillance index 
+  select(all_of(cor_vars)) |>
+  drop_na()
+
+# Spearman Correlation
+spearman_result <- rcorr(as.matrix(spearman_data), type = "spearman")
+
+# Extract correlation coefficients (rho) and p-values
+rho_matrix <- spearman_result$r
+p_matrix   <- spearman_result$P
+
+# Correlation with Surveillance Index
+spearman_summary <- tibble(
+  variable = colnames(rho_matrix),
+  rho      = rho_matrix["weighted_index_per100k", ],
+  p_value  = p_matrix["weighted_index_per100k", ]
+) |>
+  filter(variable != "weighted_index_per100k") |>
+  mutate(
+    label          = predictor_labels[variable],
+    significant    = p_value < 0.05,
+    abs_rho        = abs(rho)
+  ) |>
+  arrange(desc(abs_rho))
+
+print(spearman_summary, n = Inf)
+```
+
+```{r}
+# Full Matrix
+ggcorr(
+  spearman_data,
+  method      = c("pairwise", "spearman"),
+  digits      = 2,
+  label       = TRUE,
+  label_size  = 3,
+  label_round = 2,
+  hjust       = 0.85,
+  size        = 3.5,
+  layout.exp  = 2,
+  low = "steelblue", median = "white", high = "tomato"
+) +
+  labs(title = "Spearman correlation matrix: surveillance index and ACS predictors")
+```
+
+```{r}
+# Visualisation
+ggplot(spearman_summary, aes(x = rho, y = fct_reorder(label, rho))) +
+  geom_segment(aes(x = 0, xend = rho, y = label, yend = label),
+               colour = "grey60") +
+  geom_point(aes(colour = significant), size = 3) +
+  scale_colour_manual(
+    values = c("TRUE" = "#4C72B0", "FALSE" = "grey70"),
+    labels = c("TRUE" = "p < 0.05", "FALSE" = "n.s."),
+    name   = NULL
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", colour = "grey40") +
+  labs(
+    title    = "Spearman correlation: ACS predictors vs surveillance index",
+    subtitle = "Counties with zero surveillance index excluded",
+    x = "Spearman's rho", y = NULL
+  ) +
+  theme_minimal()
+```
+
+#### Spatial Autocorrelation
+
+```{r}
+# Dataframe
+spatial_df <- analysis_df |>
+  filter(!st_is_empty(geometry)) |>       
+  filter(!is.na(weighted_index_per100k))
+
+# Spatial weights matrix 
+# Using Queen contiguity where any counties sharing any point of their border are considered neighbours
+neighbours <- poly2nb(spatial_df, queen = TRUE)
+summary(neighbours)
+```
+
+```{r}
+# Check for counties with no neighbours 
+no_neighbours <- which(card(neighbours) == 0)
+cat("Counties with no neighbours:", length(no_neighbours), "\n")
+```
+
+```{r}
+spatial_df$NAME[no_neighbours]
+```
+
+```{r}
+neighbours <- poly2nb(spatial_df, queen = TRUE)
+hawaii_idx <- which(str_detect(spatial_df$NAME, "Hawaii"))
+# cat("Rows after deduplication: ", nrow(spatial_df), "\n")
+
+# Convert to binary matrix, add Hawaii connections, convert back
+nb_mat <- nb2mat(neighbours, style = "B", zero.policy = TRUE)
+
+# Add bidirectional connections between all Hawaii counties
+for (i in hawaii_idx) {
+  for (j in hawaii_idx) {
+    if (i != j) {
+      nb_mat[i, j] <- 1
+      nb_mat[j, i] <- 1
+    }
+  }
+}
+
+# Convert back to nb object
+neighbours_fixed <- mat2listw(nb_mat, style = "W")$neighbours
+
+# Verify using card() on the properly rebuilt object
+cat("Counties with no neighbours:", sum(card(neighbours_fixed) == 0), "\n")
+```
+
+```{r}
+for (i in hawaii_idx) {
+  cat(spatial_df$NAME[i], "->",
+      paste(spatial_df$NAME[neighbours_fixed[[i]]], collapse = ", "), "\n")
+}
+```
+
+```{r}
+# Rebuild weights
+spatial_weights <- nb2listw(neighbours_fixed, style = "W", zero.policy = TRUE)
+```
+
+```{r}
+build_spatial_weights <- function(df, name_col = "NAME") {
+  # Build neighbours from the given spatial dataframe
+  nb <- poly2nb(df, queen = TRUE)
+  n_isolated_before <- sum(card(nb) == 0)
+  
+  # Hawaii fix
+  hawaii_idx <- which(str_detect(df[[name_col]], "Hawaii"))
+  
+  if (length(hawaii_idx) > 1) {
+    nb_mat <- nb2mat(nb, style = "B", zero.policy = TRUE)
+    for (i in hawaii_idx) {
+      for (j in hawaii_idx) {
+        if (i != j) {
+          nb_mat[i, j] <- 1
+          nb_mat[j, i] <- 1
+        }
+      }
+    }
+    nb <- mat2listw(nb_mat, style = "W", zero.policy = TRUE)$neighbours
+  }
+  
+  n_isolated_after <- sum(card(nb) == 0)
+  
+  cat("No-neighbour count before Hawaii fix:", n_isolated_before, "\n")
+  cat("No-neighbour count after Hawaii fix: ", n_isolated_after, "\n")
+  if (n_isolated_after > 0) {
+    cat("Remaining isolated counties:\n")
+    print(df[[name_col]][card(nb) == 0])
+  }
+  
+  # Final listw object
+  nb2listw(nb, style = "W", zero.policy = TRUE)
+}
+```
+
+##### Moran I Test
+
+```{r}
+moran_test <- moran.test(
+  log1p(spatial_df$weighted_index_per100k),
+  spatial_weights,
+  zero.policy = TRUE
+)
+print(moran_test)
+```
+
+```{r}
+# Scatterplot
+moran.plot(
+  log1p(spatial_df$weighted_index_per100k),
+  spatial_weights,
+  zero.policy = TRUE,
+  xlab = "Surveillance index per 100k",
+  ylab = "Spatially lagged surveillance index (neighbours' average)",
+  main = "Moran scatterplot — surveillance index"
+)
+```
+
+```{r}
+# Local Moran I's (LISA)
+lisa <- localmoran(
+  spatial_df$weighted_index_per100k,
+  spatial_weights,
+  zero.policy = TRUE
+)
+
+# Add LISA results back to the spatial dataframe
+spatial_df <- spatial_df |>
+  mutate(
+    local_i   = lisa[, "Ii"],      # local Moran's I statistic
+    local_p   = lisa[, "Pr(z != E(Ii))"],  # p-value
+    local_p_fdr = p.adjust(local_p, method = "fdr"),
+    # Classify into cluster types
+    index_std  = scale(weighted_index_per100k)[, 1],
+    lag_std    = scale(lag.listw(spatial_weights, weighted_index_per100k))[, 1],
+    lisa_class = case_when(
+      index_std > 0 & lag_std > 0 & local_p_fdr < 0.05 ~ "High-High",
+      index_std < 0 & lag_std < 0 & local_p_fdr < 0.05 ~ "Low-Low",
+      index_std > 0 & lag_std < 0 & local_p_fdr < 0.05 ~ "High-Low",
+      index_std < 0 & lag_std > 0 & local_p_fdr < 0.05 ~ "Low-High",
+      TRUE ~ "Not significant"
+    )
+  )
+
+# Visualisation
+lisa_colours <- c(
+  "High-High"       = "#d73027",   # red    — surveillance hotspots
+  "Low-Low"         = "#4575b4",   # blue   — surveillance coldspots
+  "High-Low"        = "#fc8d59",   # orange — high county surrounded by low
+  "Low-High"        = "#91bfdb",   # light blue — low county surrounded by high
+  "Not significant" = "grey85"
+)
+
+spatial_df |>
+  filter(!str_detect(GEOID, "^02|^15|^72")) |>   # continental US only
+  ggplot() +
+  geom_sf(aes(fill = lisa_class), colour = NA) +
+  scale_fill_manual(values = lisa_colours, name = "LISA cluster") +
+  labs(
+    title    = "Local spatial autocorrelation of surveillance index (LISA)",
+    subtitle = "High-High = surveillance hotspots; Low-Low = coldspots"
+  ) +
+  theme_void() +
+  theme(
+    plot.title    = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 9)
+  )
+```
+
+```{r}
+# Distribution
+summary(spatial_df$weighted_index_per100k)
+```
+
+```{r}
+hist(spatial_df$weighted_index_per100k, breaks = 50)
+```
+
+```{r}
+# LISA cluster counts and percentages
+total_counties <- nrow(spatial_df)
+
+lisa_table <- table(spatial_df$lisa_class)
+
+data.frame(
+  cluster    = names(lisa_table),
+  n          = as.integer(lisa_table),
+  percentage = scales::percent(as.numeric(lisa_table) / total_counties, accuracy = 0.01)
+) |>
+  arrange(desc(n)) |>
+  print(row.names = FALSE)
+```
+
+```{r}
+lisa_log <- localmoran(
+  log1p(spatial_df$weighted_index_per100k),
+  spatial_weights,
+  zero.policy = TRUE
+)
+
+spatial_df <- spatial_df |>
+  mutate(
+    local_i_log     = lisa_log[, "Ii"],
+    local_p_log     = lisa_log[, "Pr(z != E(Ii))"],
+    local_p_log_fdr = p.adjust(local_p_log, method = "fdr"),   # <- add this
+    index_std_log   = scale(log1p(weighted_index_per100k))[, 1],
+    lag_std_log     = scale(lag.listw(spatial_weights, log1p(weighted_index_per100k)))[, 1],
+    lisa_class_log  = case_when(
+      index_std_log > 0 & lag_std_log > 0 & local_p_log_fdr < 0.05 ~ "High-High",
+      index_std_log < 0 & lag_std_log < 0 & local_p_log_fdr < 0.05 ~ "Low-Low",
+      index_std_log > 0 & lag_std_log < 0 & local_p_log_fdr < 0.05 ~ "High-Low",
+      index_std_log < 0 & lag_std_log > 0 & local_p_log_fdr < 0.05 ~ "Low-High",
+      TRUE ~ "Not significant"
+    )
+  )
+
+# Counts and percentages of log-index LISA 
+lisa_log_table <- table(spatial_df$lisa_class_log)
+cat("\nLog index LISA:\n")
+```
+
+```{r}
+data.frame(
+  cluster    = names(lisa_log_table),
+  n          = as.integer(lisa_log_table),
+  percentage = scales::percent(as.numeric(lisa_log_table) / total_counties, accuracy = 0.01)
+) |>
+  arrange(desc(n)) |>
+  print(row.names = FALSE)
+```
+
+```{r}
+# Visualisation
+spatial_df |>
+  filter(!str_detect(GEOID, "^02|^15|^72")) |>
+  ggplot() +
+  geom_sf(aes(fill = lisa_class_log), colour = NA) +
+  scale_fill_manual(values = lisa_colours, name = "LISA cluster") +
+  labs(
+    title    = "LISA clusters — log-transformed surveillance index",
+    subtitle = "High-High = hotspots; Low-Low = coldspots"
+  ) +
+  theme_void() +
+  theme(
+    plot.title    = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 9)
+  )
+```
+
+##### Summary
+
+```{r}
+cat("Moran's I:  ", round(moran_test$estimate["Moran I statistic"], 4), "\n")
+```
+
+```{r}
+cat("p-value:    ", round(moran_test$p.value, 6), "\n")
+```
+
+```{r}
+cat("\nLISA cluster counts:\n")
+```
+
+```{r}
+print(table(spatial_df$lisa_class_log))
+```
+
+#### Scatter Plots
+
+```{r}
+# Raw
+analysis_plot |>
+  st_drop_geometry() |>
+  select(weighted_index_per100k, all_of(acs_predictors)) |>
+  pivot_longer(-weighted_index_per100k, names_to = "variable", values_to = "value") |>
+  mutate(variable = predictor_labels[variable]) |>    # direct lookup, no recode()
+  ggplot(aes(x = value, y = weighted_index_per100k)) +
+  geom_point(alpha = 0.2, size = 0.6, colour = "#4C72B0") +
+  geom_smooth(method = "loess", colour = "firebrick", linewidth = 0.8, se = TRUE) +
+  facet_wrap(~ variable, scales = "free_x", ncol = 3) +
+  labs(title    = "Surveillance index vs ACS predictors (raw index)",
+       subtitle = "Counties with zero surveillance index excluded",
+       x = NULL, y = "Weighted index per 100k") +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 8))
+```
+
+```{r}
+# Log
+analysis_plot |>
+  st_drop_geometry() |>
+  select(log_index, all_of(acs_predictors)) |>
+  pivot_longer(-log_index, names_to = "variable", values_to = "value") |>
+  mutate(variable = predictor_labels[variable]) |>
+  ggplot(aes(x = value, y = log_index)) +
+  geom_point(alpha = 0.2, size = 0.6, colour = "#696FC7") +
+  geom_smooth(method = "loess", colour = "firebrick", linewidth = 0.8, se = TRUE) +
+  facet_wrap(~ variable, scales = "free_x", ncol = 3) +
+  labs(title    = "Surveillance index vs ACS predictors (log-transformed index)",
+       subtitle = "Counties with zero surveillance index excluded",
+       x = NULL, y = "log(weighted index per 100k + 1)") +
+  theme_minimal() +
+  theme(strip.text = element_text(size = 8))
+```
+
+```{r}
+rq_vars <- list(
+  list(var = "p_black",            label = "Proportion Black residents",          scale = scales::percent),
+  list(var = "p_hisp",             label = "Proportion Hispanic residents",        scale = scales::percent),
+  list(var = "p_white",            label = "Proportion White residents",           scale = scales::percent),
+  list(var = "p_foreign",          label = "Proportion Foreign Born",              scale = scales::percent),
+  list(var = "med_income",         label = "Median household income",              scale = scales::dollar),
+  list(var = "poverty_rate",       label = "Poverty rate",                         scale = scales::percent),
+  list(var = "gini",               label = "Gini coefficient",                     scale = scales::number),
+  list(var = "med_home_val",       label = "Median home value",                    scale = scales::dollar),
+  list(var = "p_renter",           label = "Proportion renter-occupied",           scale = scales::percent),
+  list(var = "p_edu_hs",           label = "Proportion high school educated",      scale = scales::percent),
+  list(var = "p_edu_ba",           label = "Proportion bachelor's educated",       scale = scales::percent),
+  list(var = "pop_den",            label = "Population density (per km²)",         scale = scales::comma),
+  list(var = "p_pt_to_work",       label = "Proportion public transport commuters",scale = scales::percent),
+  list(var = "p_uninsured",        label = "Proportion uninsured",                 scale = scales::percent)
+)
+
+for (v in rq_vars) {
+  p_raw <- analysis_plot |>
+    st_drop_geometry() |>
+    ggplot(aes(x = .data[[v$var]], y = weighted_index_per100k)) +
+    geom_point(alpha = 0.25, size = 0.8, colour = "#4C72B0") +
+    geom_smooth(method = "gam", colour = "firebrick", se = TRUE) +
+    scale_x_continuous(labels = v$scale) +
+    labs(title = paste("Surveillance index (raw) vs", v$label),
+         x = v$label, y = "Weighted index per 100k") +
+    theme_minimal()
+
+  p_log <- analysis_plot |>
+    st_drop_geometry() |>
+    ggplot(aes(x = .data[[v$var]], y = log_index)) +
+    geom_point(alpha = 0.25, size = 0.8, colour = "#696FC7") +
+    geom_smooth(method = "gam", colour = "firebrick", se = TRUE) +
+    scale_x_continuous(labels = v$scale) +
+    labs(title = paste("Surveillance index (log) vs", v$label),
+         x = v$label, y = "log(weighted index per 100k + 1)") +
+    theme_minimal()
+
+  print(p_raw)
+  print(p_log)
+}
+```
